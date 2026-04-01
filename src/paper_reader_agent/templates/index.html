@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>paper-reader-agent</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body
+    data-default-bridge-url="{{ default_bridge_url }}"
+    data-default-model="{{ default_model }}"
+    data-default-reasoning-effort="{{ default_reasoning_effort }}"
+>
+    <div class="app-shell">
+        <header class="topbar compact-topbar">
+            <div class="toolbar-row primary-controls">
+                <label class="pill-button upload-pill">
+                    <input id="pdfFileInput" type="file" accept="application/pdf" hidden>
+                    <span>导入 PDF</span>
+                </label>
+                <input id="libraryPathInput" class="field-input wide-input" type="text" placeholder="本地论文目录路径（可选）" aria-label="本地论文目录路径">
+                <button id="scanLibraryButton" class="pill-button ghost-button" type="button">扫描目录</button>
+                <select id="paperSelect" class="field-input select-input" aria-label="论文选择">
+                    <option value="">选择论文…</option>
+                </select>
+                <button id="generateGuideButton" class="pill-button accent-button" type="button" disabled>生成阅读导图</button>
+            </div>
+
+            <div class="toolbar-row secondary-controls compact-controls">
+                <label class="settings-field compact-field">
+                    <span class="sr-only">Bridge URL</span>
+                    <input id="bridgeUrlInput" class="field-input" type="text" placeholder="Bridge URL" aria-label="Bridge URL">
+                </label>
+                <label class="settings-field compact-field">
+                    <span class="sr-only">Model</span>
+                    <input id="modelInput" class="field-input" type="text" placeholder="Model" aria-label="Model">
+                </label>
+                <label class="settings-field compact-field">
+                    <span class="sr-only">Reasoning</span>
+                    <select id="reasoningEffortSelect" class="field-input" aria-label="Reasoning">
+                        <option value="">Reasoning</option>
+                        <option value="none">none</option>
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                        <option value="xhigh">xhigh</option>
+                    </select>
+                </label>
+                <label class="settings-field compact-field">
+                    <span class="sr-only">API Key（可空）</span>
+                    <input id="apiKeyInput" class="field-input" type="password" placeholder="API Key（可空）" aria-label="API Key">
+                </label>
+            </div>
+        </header>
+
+        <main id="workspace" class="workspace">
+            <aside class="column guide-column">
+                <div class="column-head">
+                    <div>
+                        <p class="column-kicker">Reading Guide</p>
+                        <h2 id="guideTitle">未打开论文</h2>
+                    </div>
+                    <span id="guideStatus" class="status-chip">待生成</span>
+                </div>
+                <div id="guidePanel" class="guide-panel empty-state">
+                    先打开一篇论文，再生成整篇阅读导图。
+                </div>
+            </aside>
+
+            <div
+                id="guideResizeHandle"
+                class="column-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="调整左栏宽度"
+                tabindex="0"
+            ></div>
+
+            <section class="reader-column">
+                <div class="reader-head compact-reader-head">
+                    <div class="reader-meta-hidden" aria-hidden="true">
+                        <p class="column-kicker">Paper View</p>
+                        <h2 id="paperTitle">还没有打开论文</h2>
+                        <p id="paperMetaLine" class="paper-meta-line">中间列默认以连续阅读为主，并保留缩放与跳页能力。</p>
+                    </div>
+
+                    <div class="reader-controls compact-reader-controls">
+                        <div class="control-group segmented-group" aria-label="阅读模式">
+                            <button id="continuousModeButton" class="small-button mode-button is-active" type="button">连续阅读</button>
+                            <button id="singlePageModeButton" class="small-button mode-button" type="button">单页</button>
+                        </div>
+                        <div class="control-group zoom-group" aria-label="缩放控制">
+                            <button id="zoomOutButton" class="small-button" type="button">-</button>
+                            <button id="fitWidthButton" class="small-button is-active" type="button">适应宽度</button>
+                            <span id="zoomLabel" class="zoom-label">100%</span>
+                            <button id="zoomInButton" class="small-button" type="button">+</button>
+                        </div>
+                        <div class="control-group page-nav-group">
+                            <button id="prevPageButton" class="small-button" type="button" disabled>上一页</button>
+                            <select id="pageSelect" class="field-input page-select" disabled></select>
+                            <button id="nextPageButton" class="small-button" type="button" disabled>下一页</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="viewer-card">
+                    <div id="viewerEmptyState" class="viewer-empty">
+                        <p>这里会显示论文原页。</p>
+                        <p class="viewer-tip">默认连续阅读；选中文本后会弹出 `解释 / 翻译`，结果进入右侧 chat。</p>
+                    </div>
+
+                    <div id="viewerScrollViewport" class="viewer-scroll-viewport hidden">
+                        <div id="viewerPages" class="viewer-pages"></div>
+                    </div>
+                </div>
+
+                <div id="viewerStatus" class="viewer-status">
+                    当前版本默认连续阅读，selection action 只在你手动选择后触发。
+                </div>
+            </section>
+
+            <div
+                id="chatResizeHandle"
+                class="column-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="调整右栏宽度"
+                tabindex="0"
+            ></div>
+
+            <aside class="column chat-column">
+                <div class="column-head">
+                    <div>
+                        <p class="column-kicker">Paper Chat</p>
+                        <h2>全文上下文助手</h2>
+                    </div>
+                    <span id="chatContextBadge" class="status-chip">未连接论文</span>
+                </div>
+                <div id="chatMessages" class="chat-messages empty-state">
+                    打开论文后，可以直接提问整篇论文。系统会优先使用全文导图和相关页面摘录，而不是只盯当前页。
+                </div>
+                <div class="chat-composer">
+                    <textarea id="chatInput" rows="6" placeholder="例如：这篇论文的核心创新是什么？作者的方法和已有工作相比差在哪？"></textarea>
+                    <div class="chat-actions">
+                        <button id="chatSendButton" class="pill-button accent-button" type="button" disabled>发送</button>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <div id="selectionPopover" class="selection-popover hidden">
+            <button id="popoverExplainButton" class="small-button" type="button">解释</button>
+            <button id="popoverTranslateButton" class="small-button" type="button">翻译</button>
+        </div>
+
+        <div id="toast" class="toast hidden"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
