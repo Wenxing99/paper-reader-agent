@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import pdfplumber
@@ -14,42 +16,50 @@ from paper_reader_agent.models import PaperRecord
 from paper_reader_agent.services.bridge import request_chat_completion
 from paper_reader_agent.services.library import inspect_pdf, resolve_pdf_path, save_paper
 from paper_reader_agent.services.obsidian import build_obsidian_export_hint
-from paper_reader_agent.services.storage import guide_path, page_path, pages_dir, read_json, renders_dir, write_json
+from paper_reader_agent.services.storage import (
+    guide_path,
+    metadata_path,
+    page_path,
+    pages_dir,
+    read_json,
+    renders_dir,
+    write_json,
+)
 
 
 WORDS_X_TOLERANCE = 1.0
 WORDS_Y_TOLERANCE = 3.0
 LINE_TOP_TOLERANCE = 2.5
+CACHE_WARMUP_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paper-cache")
+CACHE_WARMUP_LOCK = Lock()
+CACHE_WARMUP_FUTURES: dict[str, Future[Any]] = {}
 
 
 def ensure_text_cache(config: AppConfig, record: PaperRecord) -> PaperRecord:
     pdf_path = resolve_pdf_path(record)
     if not pdf_path.exists():
-        raise FileNotFoundError("åŽŸå§‹ PDF æ–‡ä»¶ä¸å­˜åœ¨ã€‚")
+        raise FileNotFoundError("原始 PDF 文件不存在。")
 
     stat = pdf_path.stat()
-    pages_root = pages_dir(config, record.id)
-    current_files = sorted(pages_root.glob("*.json")) if pages_root.exists() else []
-    cache_is_current = (
-        record.cache_state == "ready"
-        and record.source_mtime == stat.st_mtime
-        and record.source_size == stat.st_size
-        and len(current_files) == int(record.page_count or 0)
-    )
-    if cache_is_current:
+    current_files = _current_page_files(config, record.id)
+    if _is_full_cache_current(record, stat, current_files):
         return record
 
     title_hint, page_count_hint = inspect_pdf(pdf_path)
-
+    pages_root = pages_dir(config, record.id)
     pages_root.mkdir(parents=True, exist_ok=True)
-    for stale_path in current_files:
-        stale_path.unlink(missing_ok=True)
+    expected_files: set[str] = set()
 
     with pdfplumber.open(str(pdf_path)) as document:
         page_count = len(document.pages) or page_count_hint
         for page_number, page in enumerate(document.pages, start=1):
             payload = _build_page_payload(page, page_number)
             write_json(page_path(config, record.id, page_number), payload)
+            expected_files.add(f"{page_number:04d}.json")
+
+    for stale_path in current_files:
+        if stale_path.name not in expected_files:
+            stale_path.unlink(missing_ok=True)
 
     render_root = renders_dir(config, record.id)
     if render_root.exists():
@@ -69,10 +79,83 @@ def ensure_text_cache(config: AppConfig, record: PaperRecord) -> PaperRecord:
     return record
 
 
+def kickoff_text_cache_warmup(config: AppConfig, record: PaperRecord) -> PaperRecord:
+    pdf_path = resolve_pdf_path(record)
+    if not pdf_path.exists():
+        return record
+
+    stat = pdf_path.stat()
+    current_files = _current_page_files(config, record.id)
+    if _is_full_cache_current(record, stat, current_files):
+        if record.cache_state != "ready":
+            record.cache_state = "ready"
+            record.updated_at = _now_iso()
+            save_paper(config, record)
+        return record
+
+    with CACHE_WARMUP_LOCK:
+        existing = CACHE_WARMUP_FUTURES.get(record.id)
+        if existing and not existing.done():
+            if record.cache_state != "warming":
+                record.cache_state = "warming"
+                record.updated_at = _now_iso()
+                save_paper(config, record)
+            return record
+
+        record.cache_state = "warming"
+        record.updated_at = _now_iso()
+        save_paper(config, record)
+
+        future = CACHE_WARMUP_EXECUTOR.submit(_run_cache_warmup, config, record.id)
+        CACHE_WARMUP_FUTURES[record.id] = future
+        future.add_done_callback(lambda finished, paper_id=record.id: _complete_cache_warmup(config, paper_id, finished))
+    return record
+
+
+def ensure_page_cache(config: AppConfig, record: PaperRecord, page_number: int) -> tuple[PaperRecord, dict[str, Any]]:
+    if page_number < 1:
+        raise FileNotFoundError("页码必须从 1 开始。")
+
+    pdf_path = resolve_pdf_path(record)
+    if not pdf_path.exists():
+        raise FileNotFoundError("原始 PDF 文件不存在。")
+
+    stat = pdf_path.stat()
+    cached_page_path = page_path(config, record.id, page_number)
+    source_is_current = _source_is_current(record, stat)
+    cached_payload = read_json(cached_page_path, None) if source_is_current else None
+    if cached_payload:
+        return record, cached_payload
+
+    with pdfplumber.open(str(pdf_path)) as document:
+        page_count = len(document.pages)
+        if page_number > page_count:
+            raise FileNotFoundError("页码超出范围。")
+        payload = _build_page_payload(document.pages[page_number - 1], page_number)
+
+    write_json(cached_page_path, payload)
+
+    record.title = record.title or pdf_path.stem
+    record.filename = record.filename or pdf_path.name
+    record.page_count = page_count
+    record.source_mtime = stat.st_mtime
+    record.source_size = stat.st_size
+    cached_count = _cached_page_count(config, record.id)
+    if cached_count >= page_count:
+        record.cache_state = "ready"
+    elif record.cache_state == "warming":
+        record.cache_state = "warming"
+    else:
+        record.cache_state = "partial"
+    record.updated_at = _now_iso()
+    save_paper(config, record)
+    return record, payload
+
+
 def load_page(config: AppConfig, paper_id: str, page_number: int) -> dict[str, Any]:
     payload = read_json(page_path(config, paper_id, page_number), None)
     if payload is None:
-        raise FileNotFoundError("é¡µæ•°æ®ä¸å­˜åœ¨ã€‚")
+        raise FileNotFoundError("页面数据不存在。")
     return payload
 
 
@@ -101,7 +184,7 @@ def generate_reading_guide(
     pages = load_all_pages(config, record.id)
     labeled_text = build_labeled_document_text(pages, config.max_guide_chars)
     if not labeled_text:
-        raise RuntimeError("æ²¡æœ‰å¯ç”¨äºŽç”Ÿæˆé˜…è¯»å¯¼å›¾çš„æ–‡æœ¬å±‚ã€‚")
+        raise RuntimeError("没有可用于生成阅读导图的文本层。")
 
     raw = request_chat_completion(
         bridge,
@@ -117,7 +200,7 @@ def generate_reading_guide(
                 "role": "user",
                 "content": "\n".join(
                     [
-                        "è¯·æ ¹æ®æ•´ç¯‡è®ºæ–‡å†…å®¹ç”Ÿæˆä¸€ä¸ªç»“æž„åŒ–é˜…è¯»å¯¼å›¾ï¼Œåªè¿”å›ž JSONï¼š",
+                        "请根据整篇论文内容生成一个结构化阅读导图，只返回 JSON：",
                         "{",
                         '  "paper_title": "string",',
                         '  "one_sentence": "string",',
@@ -130,16 +213,16 @@ def generate_reading_guide(
                         '  "reading_guide": ["string"],',
                         '  "sections": [{"title": "string", "page_hint": 1, "summary": "string"}]',
                         "}",
-                        "è¦æ±‚ï¼š",
-                        "- æ‰€æœ‰å­—æ®µéƒ½ç”¨ç®€ä½“ä¸­æ–‡ã€‚",
-                        "- ä¸è¦å†™æˆé¡µé¢å¯¼èˆªï¼Œä¸è¦æŠŠè¾“å‡ºåšæˆå¸¸é©»ç« èŠ‚é¢æ¿æ–‡æ¡ˆã€‚",
-                        "- one_sentence è¦åƒçœŸæ­£çš„è®ºæ–‡æ€»è§ˆï¼Œä¸è¦ç©ºæ³›ã€‚",
-                        "- background/problem/innovations/method/results/limitations æ¯ç»„ç»™ 2-5 æ¡ã€‚",
-                        "- reading_guide è¦å‘Šè¯‰ç”¨æˆ·åº”è¯¥å…ˆçœ‹å“ªé‡Œã€å†çœ‹å“ªé‡Œã€å“ªäº›éƒ¨åˆ†å€¼å¾—è·³è¯»ã€‚",
-                        "- sections åªä¿ç•™ 4-8 ä¸ªé‡è¦ç« èŠ‚æˆ–å†…å®¹å•å…ƒï¼Œpage_hint å°½é‡ä¾æ® [Page N] æ ‡è®°ã€‚",
-                        "- ä¸è¦ç¼–é€ è®ºæ–‡é‡Œæ²¡æœ‰çš„ä¿¡æ¯ã€‚",
-                        f"è®ºæ–‡æ ‡é¢˜æç¤º: {record.title}",
-                        "è®ºæ–‡æ–‡æœ¬ï¼š",
+                        "要求：",
+                        "- 所有字段都用简体中文。",
+                        "- 不要写成页面导航，不要把输出做成常驻章节面板文案。",
+                        "- one_sentence 要像真正的论文总览，不要空泛。",
+                        "- background/problem/innovations/method/results/limitations 每组给 2-5 条。",
+                        "- reading_guide 要告诉用户应该先看哪里、再看哪里、哪些部分值得跳读。",
+                        "- sections 只保留 4-8 个重要章节或内容单元，page_hint 尽量依据 [Page N] 标记。",
+                        "- 不要编造论文里没有的信息。",
+                        f"论文标题提示: {record.title}",
+                        "论文文本：",
                         labeled_text,
                     ]
                 ),
@@ -171,7 +254,7 @@ def render_page_image(config: AppConfig, record: PaperRecord, page_number: int) 
     document = pdfium.PdfDocument(str(pdf_path))
     try:
         if page_number < 1 or page_number > len(document):
-            raise FileNotFoundError("é¡µç è¶…å‡ºèŒƒå›´ã€‚")
+            raise FileNotFoundError("页码超出范围。")
         page = document[page_number - 1]
         try:
             bitmap = page.render(scale=config.render_scale)
@@ -203,6 +286,8 @@ def build_document_payload(config: AppConfig, record: PaperRecord, *, include_gu
         "source_exists": pdf_path.exists(),
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+        "cache_state": record.cache_state,
+        "guide_state": record.guide_state,
         "has_text_cache": record.cache_state == "ready",
         "has_reading_guide": bool(guide),
         "reading_guide": guide,
@@ -228,7 +313,7 @@ def build_labeled_document_text(pages: list[dict[str, Any]], max_chars: int) -> 
 def normalize_reading_guide(payload: dict[str, Any], title_hint: str) -> dict[str, Any]:
     return {
         "paper_title": _first_non_empty(payload.get("paper_title"), title_hint, "Untitled"),
-        "one_sentence": _first_non_empty(payload.get("one_sentence"), "æœªç”Ÿæˆä¸€å¥è¯æ€»ç»“ã€‚"),
+        "one_sentence": _first_non_empty(payload.get("one_sentence"), "未生成一句话总结。"),
         "background": _string_list(payload.get("background")),
         "problem": _string_list(payload.get("problem")),
         "innovations": _string_list(payload.get("innovations")),
@@ -382,6 +467,53 @@ def _first_non_empty(*values: Any) -> str:
             if text:
                 return text
     return ""
+
+
+def _current_page_files(config: AppConfig, paper_id: str) -> list[Path]:
+    root = pages_dir(config, paper_id)
+    return sorted(root.glob("*.json")) if root.exists() else []
+
+
+def _source_is_current(record: PaperRecord, stat: Any) -> bool:
+    return record.source_mtime == stat.st_mtime and record.source_size == stat.st_size
+
+
+def _is_full_cache_current(record: PaperRecord, stat: Any, current_files: list[Path]) -> bool:
+    return (
+        record.cache_state == "ready"
+        and _source_is_current(record, stat)
+        and len(current_files) == int(record.page_count or 0)
+    )
+
+
+def _cached_page_count(config: AppConfig, paper_id: str) -> int:
+    return len(_current_page_files(config, paper_id))
+
+
+def _run_cache_warmup(config: AppConfig, paper_id: str) -> None:
+    payload = read_json(metadata_path(config, paper_id), None)
+    if not payload:
+        return
+    record = PaperRecord.from_json(payload)
+    ensure_text_cache(config, record)
+
+
+def _complete_cache_warmup(config: AppConfig, paper_id: str, finished: Future[Any]) -> None:
+    with CACHE_WARMUP_LOCK:
+        if CACHE_WARMUP_FUTURES.get(paper_id) is finished:
+            CACHE_WARMUP_FUTURES.pop(paper_id, None)
+
+    if finished.cancelled() or finished.exception() is None:
+        return
+
+    payload = read_json(metadata_path(config, paper_id), None)
+    if not payload:
+        return
+
+    record = PaperRecord.from_json(payload)
+    record.cache_state = "partial" if _cached_page_count(config, paper_id) else "missing"
+    record.updated_at = _now_iso()
+    save_paper(config, record)
 
 
 def _now_iso() -> str:

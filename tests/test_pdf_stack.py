@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sys
 import unittest
 from pathlib import Path
@@ -18,24 +19,28 @@ if str(SRC_ROOT) not in sys.path:
 from paper_reader_agent.config import AppConfig
 from paper_reader_agent.models import PaperRecord
 from paper_reader_agent.services.library import inspect_pdf
-from paper_reader_agent.services.papers import ensure_text_cache, load_page, render_page_image
+from paper_reader_agent.services.papers import ensure_page_cache, ensure_text_cache, load_page, render_page_image
 from paper_reader_agent.services.storage import ensure_repo_dirs
 
 
 class PdfStackTests(unittest.TestCase):
-    def test_blank_pdf_can_be_inspected_cached_and_rendered(self) -> None:
+    def test_blank_pdf_can_be_inspected_cached_on_demand_and_rendered(self) -> None:
         repo_root = REPO_ROOT / ".tmp" / "test_pdf_stack_workspace"
+        if repo_root.exists():
+            shutil.rmtree(repo_root)
         repo_root.mkdir(parents=True, exist_ok=True)
         pdf_path = repo_root / "blank.pdf"
 
         writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        writer.add_blank_page(width=612, height=792)
         writer.add_blank_page(width=612, height=792)
         with pdf_path.open("wb") as handle:
             writer.write(handle)
 
         title, page_count = inspect_pdf(pdf_path)
         self.assertEqual(title, "")
-        self.assertEqual(page_count, 1)
+        self.assertEqual(page_count, 3)
 
         config = AppConfig(
             repo_root=repo_root,
@@ -70,19 +75,31 @@ class PdfStackTests(unittest.TestCase):
             source_size=stat.st_size,
         )
 
-        updated = ensure_text_cache(config, record)
-        self.assertEqual(updated.page_count, 1)
+        partial_record, first_page = ensure_page_cache(config, record, 1)
+        self.assertEqual(partial_record.page_count, 3)
+        self.assertEqual(partial_record.cache_state, "partial")
+        self.assertAlmostEqual(float(first_page["width"]), 612.0)
+        self.assertAlmostEqual(float(first_page["height"]), 792.0)
+        self.assertFalse(first_page["has_text_layer"])
+        self.assertEqual(first_page["text"], "")
 
-        page = load_page(config, updated.id, 1)
+        updated = ensure_text_cache(config, partial_record)
+        self.assertEqual(updated.page_count, 3)
+        self.assertEqual(updated.cache_state, "ready")
+
+        page = load_page(config, updated.id, 2)
         self.assertAlmostEqual(float(page["width"]), 612.0)
         self.assertAlmostEqual(float(page["height"]), 792.0)
         self.assertFalse(page["has_text_layer"])
         self.assertEqual(page["text"], "")
 
-        image_path = render_page_image(config, updated, 1)
+        image_path = render_page_image(config, updated, 3)
         self.assertTrue(image_path.exists())
         self.assertEqual(image_path.suffix.lower(), ".png")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

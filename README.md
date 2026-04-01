@@ -1,6 +1,6 @@
 # paper-reader-agent
 
-`paper-reader-agent` 是一个独立的本地论文阅读 Web App。它不追求复刻 Vibero，而是围绕个人科研工作流来设计：
+`paper-reader-agent` 是一个独立的本地论文阅读 Web App。它围绕个人科研工作流来设计：
 
 - 左栏只放整篇论文的阅读导图
 - 中间只放原始论文阅读面
@@ -19,12 +19,20 @@
 - 顶部工具区压缩为紧凑操作条，尽量把可视空间留给 PDF
 - 中间列默认连续阅读整篇论文，也可切换回单页模式
 - 中间列支持缩放、适应宽度和跳页
+- 中间列现已使用 repo 内 vendored 的 `PDF.js` 作为本地渲染层，不要求 Node 构建链
 - 左栏导图、中间 PDF、右栏 chat 在桌面布局下各自独立滚动
 - 左栏和右栏在桌面布局下支持拖拽调宽，中间 PDF 会随之自适应变宽或变窄
 - 中间列支持选中文本后弹出 `解释 / 翻译`
 - 右侧 chat 默认注入全文导图和相关页面摘录，而不是只盯当前页
 - 为未来 Obsidian 导出预留本地数据结构和目录
-- 内建本地 Codex bridge 启动链，避免依赖旧 repo
+- 内建本地 Codex bridge 启动链，避免依赖额外仓库或中间层
+
+## Reading Flow
+
+- 导入 PDF 时会优先完成文件保存和基础元数据读取，不再默认阻塞到整篇文本缓存完成
+- 打开论文后，阅读器会先准备首批页面，剩余页面文本层随着滚动按需加载
+- 全文文本缓存会在后台继续补齐，这样可以兼顾“先开始读”和“后续导图 / chat 需要全文上下文”
+- 如果刚导入完就立刻发起整篇阅读导图或全文 chat，第一次仍可能等待全文缓存补完
 
 ## Open-Source Hygiene
 
@@ -47,6 +55,7 @@
 - `pdfplumber`：MIT
 - `pdfminer.six`：MIT
 - `pypdfium2`：Apache-2.0 or BSD-3-Clause
+- vendored `PDF.js` assets：Apache-2.0
 
 仓库主许可证仍然可以保持 MIT；第三方许可证说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
@@ -318,7 +327,7 @@ paper-reader-agent/
 
 ## Notes
 
-- 不依赖旧 repo 或全局环境里“刚好有”的包
+- 不依赖其他仓库或全局环境里“刚好有”的包
 - 默认不引入 Node 构建链；前端目前是纯静态资源
 - 扫描论文目录时不会出现常驻论文库侧栏，而是通过顶部入口动作和选择器打开论文
 - Obsidian 相关目录和导出 hint 已预留，但暂未开放正式导出按钮

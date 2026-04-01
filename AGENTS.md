@@ -309,6 +309,7 @@ Agents working in this repo should follow this order:
 3. When a requested change conflicts with this file, surface the conflict clearly instead of silently drifting.
 4. Prefer small, testable increments.
 5. Keep architecture documents and this file aligned with real product changes.
+6. When editing user-facing Chinese text, preserve UTF-8, avoid shell-based rewrites that may corrupt encoding, and re-scan for mojibake/placeholder strings before finishing.
 
 ## Definition Of Success For Near-Term Iterations
 

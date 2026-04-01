@@ -4,9 +4,10 @@
 
 Key PDF-related components currently used by this repository:
 
-- `pypdf` — BSD-3-Clause
-- `pdfplumber` — MIT
-- `pdfminer.six` — MIT
-- `pypdfium2` — Apache-2.0 or BSD-3-Clause
+- `pypdf` - BSD-3-Clause
+- `pdfplumber` - MIT
+- `pdfminer.six` - MIT
+- `pypdfium2` - Apache-2.0 or BSD-3-Clause
+- vendored `PDF.js` assets (v5.6.205) under `src/paper_reader_agent/static/vendor/pdfjs/` - Apache-2.0
 
-If this repository later vendors front-end PDF components such as `PDF.js`, their upstream license notices must be preserved alongside the distributed files.
+Additional upstream notices bundled with vendored PDF.js assets are preserved in that vendor directory.

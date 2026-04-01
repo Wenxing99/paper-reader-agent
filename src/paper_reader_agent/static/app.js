@@ -5,6 +5,7 @@ const state = {
     currentPaper: null,
     currentPage: 1,
     pageCache: {},
+    pageRequests: new Map(),
     chatMessages: [],
     selectedText: "",
     selectedPage: 1,
@@ -27,6 +28,17 @@ const state = {
         guideWidth: normalizeSidebarWidth(localStorage.getItem("paperReaderAgent.guideWidth"), 300, 220, 520),
         chatWidth: normalizeSidebarWidth(localStorage.getItem("paperReaderAgent.chatWidth"), 320, 260, 560),
         dragging: null,
+    },
+    pdf: {
+        modulePromise: null,
+        lib: null,
+        documentPromise: null,
+        loadingTask: null,
+        document: null,
+        documentUrl: "",
+        renderGeneration: 0,
+        activeTasks: new Map(),
+        renderFrame: 0,
     },
 };
 
@@ -70,6 +82,12 @@ const els = {
     popoverTranslateButton: document.getElementById("popoverTranslateButton"),
     toast: document.getElementById("toast"),
 };
+
+const PDFJS_BASE = "/static/vendor/pdfjs/";
+const PDFJS_MODULE_URL = `${PDFJS_BASE}build/pdf.mjs`;
+const PDFJS_WORKER_URL = `${PDFJS_BASE}build/pdf.worker.mjs`;
+const MAX_CONTINUOUS_RENDER_PAGES = 4;
+const INITIAL_CONTINUOUS_PAGE_LOAD_COUNT = 1;
 
 function init() {
     els.bridgeUrlInput.value = state.settings.bridgeUrl;
@@ -216,9 +234,11 @@ async function scanLibrary() {
 async function openPaper(paperId) {
     try {
         const data = await api(`/api/papers/${paperId}`);
+        resetPdfDocument();
         state.currentPaper = data.paper;
         state.currentPage = 1;
         state.pageCache = {};
+        state.pageRequests = new Map();
         state.chatMessages = [];
         state.selectedText = "";
         state.selectedPage = 1;
@@ -268,13 +288,17 @@ async function loadReaderForCurrentMode({ scrollToCurrent = false, behavior = "a
 
     try {
         const targetPages = state.reader.mode === "continuous"
-            ? listAllPageNumbers()
+            ? getInitialContinuousPageNumbers()
             : [state.currentPage];
-        await ensurePagesLoaded(targetPages);
+        await Promise.all([
+            ensurePagesLoaded(targetPages),
+            ensurePdfDocumentReady(),
+        ]);
         if (token !== state.viewerRequestToken) {
             return;
         }
         renderViewer();
+        scheduleVisiblePageRenders();
         if (scrollToCurrent) {
             if (state.reader.mode === "continuous") {
                 scrollToPage(state.currentPage, behavior);
@@ -293,28 +317,93 @@ async function loadReaderForCurrentMode({ scrollToCurrent = false, behavior = "a
     }
 }
 
-async function ensurePagesLoaded(pageNumbers) {
-    const missingPageNumbers = pageNumbers.filter((pageNumber) => !state.pageCache[pageNumber]);
-    if (!missingPageNumbers.length) {
-        return;
+async function ensurePagesLoaded(pageNumbers, { silent = false } = {}) {
+    const uniquePageNumbers = Array.from(new Set(pageNumbers.filter(Boolean)));
+    if (!uniquePageNumbers.length) {
+        return [];
     }
 
-    if (state.reader.mode === "continuous") {
-        els.viewerStatus.textContent = `正在准备连续阅读（${missingPageNumbers.length} 页）...`;
-    }
-    else {
-        els.viewerStatus.textContent = `正在加载第 ${state.currentPage} 页...`;
+    const missingPageNumbers = uniquePageNumbers.filter((pageNumber) => !state.pageCache[pageNumber]);
+    if (!silent && missingPageNumbers.length) {
+        if (state.reader.mode === "continuous") {
+            els.viewerStatus.textContent = `正在准备首批页面（${missingPageNumbers.length} 页）...`;
+        }
+        else {
+            els.viewerStatus.textContent = `正在加载第 ${state.currentPage} 页...`;
+        }
     }
 
-    const pagePayloads = await Promise.all(missingPageNumbers.map(loadPageData));
-    for (const page of pagePayloads) {
-        state.pageCache[page.page_number] = page;
-    }
+    const pagePayloads = await Promise.all(uniquePageNumbers.map((pageNumber) => ensurePageLoaded(pageNumber)));
+    updateViewerStatus();
+    return pagePayloads.filter(Boolean);
 }
 
-async function loadPageData(pageNumber) {
-    const data = await api(`/api/papers/${state.currentPaper.id}/pages/${pageNumber}`);
-    return data.page;
+async function ensurePageLoaded(pageNumber) {
+    if (state.pageCache[pageNumber]) {
+        return state.pageCache[pageNumber];
+    }
+
+    const existingRequest = state.pageRequests.get(pageNumber);
+    if (existingRequest) {
+        return existingRequest;
+    }
+
+    const paperId = state.currentPaper?.id;
+    if (!paperId) {
+        return null;
+    }
+
+    const requestPromise = loadPageData(pageNumber, paperId)
+        .then((data) => {
+            if (state.currentPaper?.id !== paperId) {
+                return null;
+            }
+            if (data.paper) {
+                state.currentPaper = { ...state.currentPaper, ...data.paper };
+            }
+            const page = data.page || null;
+            if (!page) {
+                return null;
+            }
+            const hadPage = Boolean(state.pageCache[page.page_number]);
+            state.pageCache[page.page_number] = page;
+            if (!hadPage) {
+                hydratePageCard(page.page_number);
+            }
+            return page;
+        })
+        .finally(() => {
+            if (state.pageRequests.get(pageNumber) === requestPromise) {
+                state.pageRequests.delete(pageNumber);
+            }
+        });
+
+    state.pageRequests.set(pageNumber, requestPromise);
+    return requestPromise;
+}
+
+async function loadPageData(pageNumber, paperId = state.currentPaper?.id) {
+    const data = await api(`/api/papers/${paperId}/pages/${pageNumber}`);
+    return data;
+}
+
+function getInitialContinuousPageNumbers() {
+    if (!state.currentPaper) {
+        return [];
+    }
+
+    const ordered = [state.currentPage, state.currentPage + 1, state.currentPage - 1, state.currentPage + 2, state.currentPage + 3];
+    const unique = [];
+    for (const pageNumber of ordered) {
+        if (pageNumber < 1 || pageNumber > state.currentPaper.page_count || unique.includes(pageNumber)) {
+            continue;
+        }
+        unique.push(pageNumber);
+        if (unique.length >= INITIAL_CONTINUOUS_PAGE_LOAD_COUNT) {
+            break;
+        }
+    }
+    return unique;
 }
 
 function applyWorkspaceLayout({ persist = false } = {}) {
@@ -436,7 +525,7 @@ async function changePage(pageNumber) {
         try {
             await ensurePagesLoaded([pageNumber]);
             if (!hadPage) {
-                renderViewer();
+                updateViewerStatus();
             }
             scrollToPage(pageNumber, "smooth");
         }
@@ -477,24 +566,25 @@ function renderPageCard(pageNumber) {
     const page = state.pageCache[pageNumber];
     if (!page) {
         return `
-            <section class="paper-page" data-page-number="${pageNumber}">
-                <div class="page-placeholder">正在准备第 ${pageNumber} 页…</div>
+            <section class="paper-page paper-page--placeholder" data-page-number="${pageNumber}">
+                <div class="page-frame">
+                    <div class="page-stage">
+                        <div class="page-placeholder">正在准备第 ${pageNumber} 页…</div>
+                    </div>
+                </div>
                 <p class="page-caption">第 ${pageNumber} 页</p>
             </section>
         `;
     }
 
-    const imageLoading = state.reader.mode === "continuous" ? "lazy" : "eager";
     return `
-        <section class="paper-page" data-page-number="${pageNumber}">
+        <section class="paper-page is-loading" data-page-number="${pageNumber}">
             <div class="page-frame">
                 <div class="page-stage">
-                    <img
-                        class="page-image"
-                        src="${escapeAttribute(page.image_url)}?ts=${encodeURIComponent(state.currentPaper.updated_at || "")}"
-                        alt="PDF page ${pageNumber}"
-                        loading="${imageLoading}"
-                    >
+                    <canvas class="page-canvas" data-page-number="${pageNumber}" aria-label="PDF page ${pageNumber}"></canvas>
+                    <div class="page-loading-shell" aria-hidden="true">
+                        <span class="page-loading-label">正在渲染第 ${pageNumber} 页…</span>
+                    </div>
                     <div class="page-text-layer" data-page-number="${pageNumber}">
                         ${(page.lines || []).map((line) => renderLine(line)).join("")}
                     </div>
@@ -519,26 +609,70 @@ function renderLine(line) {
 function syncViewerScale() {
     const pageNodes = els.viewerPages.querySelectorAll(".paper-page");
     for (const pageNode of pageNodes) {
-        const pageNumber = Number(pageNode.dataset.pageNumber || 0);
-        const page = state.pageCache[pageNumber];
-        if (!page) {
-            continue;
-        }
-
-        const scale = getScaleForPage(page);
-        const frame = pageNode.querySelector(".page-frame");
-        const stage = pageNode.querySelector(".page-stage");
-        if (!frame || !stage) {
-            continue;
-        }
-
-        frame.style.width = `${page.width * scale}px`;
-        frame.style.height = `${page.height * scale}px`;
-        stage.style.width = `${page.width}px`;
-        stage.style.height = `${page.height}px`;
-        stage.style.transform = `scale(${scale})`;
+        syncPageNodeScale(pageNode);
     }
+    scheduleVisiblePageRenders();
     updateZoomControls();
+}
+
+function syncPageNodeScale(pageNode) {
+    const pageNumber = Number(pageNode.dataset.pageNumber || 0);
+    const metrics = state.pageCache[pageNumber] || getEstimatedPageMetrics();
+    if (!metrics) {
+        return;
+    }
+
+    const scale = getScaleForPage(metrics);
+    const frame = pageNode.querySelector(".page-frame");
+    const stage = pageNode.querySelector(".page-stage");
+    if (!frame || !stage) {
+        return;
+    }
+
+    frame.style.width = `${metrics.width * scale}px`;
+    frame.style.height = `${metrics.height * scale}px`;
+    stage.style.width = `${metrics.width * scale}px`;
+    stage.style.height = `${metrics.height * scale}px`;
+
+    const canvas = pageNode.querySelector(".page-canvas");
+    const textLayer = pageNode.querySelector(".page-text-layer");
+    if (canvas) {
+        canvas.style.width = `${metrics.width * scale}px`;
+        canvas.style.height = `${metrics.height * scale}px`;
+    }
+    if (textLayer) {
+        textLayer.style.width = `${metrics.width}px`;
+        textLayer.style.height = `${metrics.height}px`;
+        textLayer.style.transform = `scale(${scale})`;
+    }
+}
+
+function hydratePageCard(pageNumber) {
+    const existingNode = els.viewerPages.querySelector(`.paper-page[data-page-number="${pageNumber}"]`);
+    if (!existingNode) {
+        return;
+    }
+
+    const template = document.createElement("template");
+    template.innerHTML = renderPageCard(pageNumber).trim();
+    const nextNode = template.content.firstElementChild;
+    if (!nextNode) {
+        return;
+    }
+
+    if (state.pageObserver && state.reader.mode === "continuous") {
+        state.pageObserver.unobserve(existingNode);
+    }
+    existingNode.replaceWith(nextNode);
+    syncPageNodeScale(nextNode);
+    if (state.pageObserver && state.reader.mode === "continuous") {
+        state.pageObserver.observe(nextNode);
+    }
+    scheduleVisiblePageRenders();
+}
+
+function getEstimatedPageMetrics() {
+    return getReferencePage() || { width: 612, height: 792 };
 }
 
 function setupPageObserver() {
@@ -551,6 +685,7 @@ function setupPageObserver() {
 
     state.pageObserver = new IntersectionObserver(handlePageIntersections, {
         root: els.viewerScrollViewport,
+        rootMargin: "90% 0px",
         threshold: [0.2, 0.45, 0.7, 0.9],
     });
 
@@ -589,6 +724,7 @@ function handlePageIntersections(entries) {
         refreshReaderHeader();
         updateViewerStatus();
     }
+    scheduleVisiblePageRenders();
 }
 
 function scrollToPage(pageNumber, behavior = "smooth") {
@@ -700,13 +836,21 @@ function updateViewerStatus() {
 
     const loadedPageCount = Object.keys(state.pageCache).length;
     if (state.reader.mode === "continuous" && loadedPageCount < state.currentPaper.page_count) {
-        els.viewerStatus.textContent = `正在准备连续阅读：已加载 ${loadedPageCount}/${state.currentPaper.page_count} 页。`;
+        const contextHint = state.currentPaper.cache_state === "warming"
+            ? "全文上下文仍在后台准备。"
+            : "其余页面会随着滚动按需加载。";
+        els.viewerStatus.textContent = `连续阅读已可开始：已准备 ${loadedPageCount}/${state.currentPaper.page_count} 页，${contextHint}`;
         return;
     }
 
     const currentPageData = state.pageCache[state.currentPage];
     if (currentPageData && !currentPageData.has_text_layer) {
         els.viewerStatus.textContent = "这一页没有可提取的文字层，所以当前页无法触发 selection action。";
+        return;
+    }
+
+    if (state.currentPaper.cache_state === "warming") {
+        els.viewerStatus.textContent = "PDF 已可正常阅读；全文上下文仍在后台准备，你可以先读再问。";
         return;
     }
 
@@ -720,6 +864,7 @@ function updateViewerStatus() {
 
 function handleViewerScroll() {
     hideSelectionPopover();
+    scheduleVisiblePageRenders();
 }
 
 function handleWindowResize() {
@@ -826,7 +971,7 @@ function renderGuide(guide) {
         `
             <section class="guide-intro">
                 <strong>${escapeHtml(guide.paper_title || state.currentPaper.title)}</strong>
-                <p>${escapeHtml(guide.one_sentence || "未生成一句话总结。")}</p>
+                <p>${escapeHtml(guide.one_sentence || "暂无一句话总结。")}</p>
             </section>
         `,
         renderGuideGroup("研究背景", guide.background),
@@ -869,6 +1014,325 @@ function renderGuideSections(sections) {
             </ul>
         </section>
     `;
+}
+
+async function loadPdfJs() {
+    if (state.pdf.lib) {
+        return state.pdf.lib;
+    }
+    if (!state.pdf.modulePromise) {
+        state.pdf.modulePromise = import(PDFJS_MODULE_URL)
+            .then((module) => {
+                module.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+                state.pdf.lib = module;
+                return module;
+            })
+            .catch((error) => {
+                state.pdf.modulePromise = null;
+                throw error;
+            });
+    }
+    return state.pdf.modulePromise;
+}
+
+async function ensurePdfDocumentReady() {
+    const pdfUrl = state.currentPaper?.pdf_url;
+    if (!pdfUrl) {
+        return null;
+    }
+
+    const resolvedUrl = new URL(pdfUrl, window.location.origin).toString();
+    if (state.pdf.document && state.pdf.documentUrl === resolvedUrl) {
+        return state.pdf.document;
+    }
+    if (state.pdf.documentPromise && state.pdf.documentUrl === resolvedUrl) {
+        return state.pdf.documentPromise;
+    }
+
+    resetPdfDocument();
+    const pdfjs = await loadPdfJs();
+    const loadingTask = pdfjs.getDocument({
+        url: resolvedUrl,
+        cMapUrl: `${PDFJS_BASE}cmaps/`,
+        cMapPacked: true,
+        iccUrl: `${PDFJS_BASE}iccs/`,
+        standardFontDataUrl: `${PDFJS_BASE}standard_fonts/`,
+        wasmUrl: `${PDFJS_BASE}wasm/`,
+    });
+
+    state.pdf.documentUrl = resolvedUrl;
+    state.pdf.loadingTask = loadingTask;
+    state.pdf.documentPromise = loadingTask.promise
+        .then((documentHandle) => {
+            if (state.pdf.documentUrl !== resolvedUrl) {
+                documentHandle.destroy();
+                throw new Error("PDF document switched while loading.");
+            }
+            state.pdf.loadingTask = null;
+            state.pdf.document = documentHandle;
+            return documentHandle;
+        })
+        .catch((error) => {
+            if (state.pdf.documentUrl === resolvedUrl) {
+                state.pdf.loadingTask = null;
+                state.pdf.documentPromise = null;
+                state.pdf.document = null;
+                state.pdf.documentUrl = "";
+            }
+            throw error;
+        });
+    return state.pdf.documentPromise;
+}
+
+function resetPdfDocument() {
+    if (state.pdf.renderFrame) {
+        cancelAnimationFrame(state.pdf.renderFrame);
+        state.pdf.renderFrame = 0;
+    }
+    for (const task of state.pdf.activeTasks.values()) {
+        try {
+            task.cancel();
+        }
+        catch (_error) {
+            // Ignore cancellation races while switching papers or zoom levels.
+        }
+    }
+    state.pdf.activeTasks.clear();
+    if (state.pdf.loadingTask) {
+        try {
+            state.pdf.loadingTask.destroy();
+        }
+        catch (_error) {
+            // Ignore destroy races.
+        }
+    }
+    if (state.pdf.document) {
+        try {
+            state.pdf.document.destroy();
+        }
+        catch (_error) {
+            // Ignore destroy races.
+        }
+    }
+    state.pdf.documentPromise = null;
+    state.pdf.loadingTask = null;
+    state.pdf.document = null;
+    state.pdf.documentUrl = "";
+    state.pdf.renderGeneration += 1;
+}
+
+function scheduleVisiblePageRenders() {
+    if (!state.currentPaper || !els.viewerScrollViewport || els.viewerScrollViewport.classList.contains("hidden")) {
+        return;
+    }
+    if (state.pdf.renderFrame) {
+        return;
+    }
+    state.pdf.renderFrame = requestAnimationFrame(() => {
+        state.pdf.renderFrame = 0;
+        void renderVisiblePages();
+    });
+}
+
+async function renderVisiblePages() {
+    if (!state.currentPaper) {
+        return;
+    }
+
+    const pageNumbers = collectRenderablePageNumbers();
+    try {
+        await ensurePagesLoaded(pageNumbers, { silent: true });
+    }
+    catch (error) {
+        els.viewerStatus.textContent = error.message;
+        return;
+    }
+
+    let pdfDocument;
+    try {
+        pdfDocument = await ensurePdfDocumentReady();
+    }
+    catch (error) {
+        els.viewerStatus.textContent = error.message;
+        return;
+    }
+    if (!pdfDocument) {
+        return;
+    }
+
+    for (const pageNumber of pageNumbers) {
+        try {
+            await ensurePdfPageRendered(pageNumber, pdfDocument);
+        }
+        catch (error) {
+            els.viewerStatus.textContent = error.message;
+            break;
+        }
+    }
+}
+
+function collectRenderablePageNumbers() {
+    if (!state.currentPaper) {
+        return [];
+    }
+    if (state.reader.mode === "single") {
+        return [state.currentPage];
+    }
+
+    const viewportRect = els.viewerScrollViewport.getBoundingClientRect();
+    const candidates = [];
+    for (const pageNode of els.viewerPages.querySelectorAll(".paper-page")) {
+        const rect = pageNode.getBoundingClientRect();
+        if (rect.bottom < viewportRect.top - viewportRect.height * 0.35 || rect.top > viewportRect.bottom + viewportRect.height * 0.35) {
+            continue;
+        }
+        const pageNumber = Number(pageNode.dataset.pageNumber || 0);
+        if (!pageNumber) {
+            continue;
+        }
+        const intersectsViewport = rect.bottom > viewportRect.top && rect.top < viewportRect.bottom;
+        const viewportDistance = intersectsViewport
+            ? 0
+            : Math.min(Math.abs(rect.top - viewportRect.bottom), Math.abs(rect.bottom - viewportRect.top));
+        candidates.push({
+            pageNumber,
+            intersectsViewport,
+            viewportDistance,
+            currentDistance: Math.abs(pageNumber - state.currentPage),
+        });
+    }
+
+    const ordered = [];
+    if (state.currentPage) {
+        ordered.push(state.currentPage);
+    }
+    candidates
+        .sort((left, right) => (
+            Number(right.intersectsViewport) - Number(left.intersectsViewport)
+            || left.viewportDistance - right.viewportDistance
+            || left.currentDistance - right.currentDistance
+            || left.pageNumber - right.pageNumber
+        ))
+        .forEach((entry) => ordered.push(entry.pageNumber));
+
+    for (const pageNumber of [state.currentPage + 1, state.currentPage - 1, state.currentPage + 2]) {
+        if (pageNumber >= 1 && pageNumber <= state.currentPaper.page_count) {
+            ordered.push(pageNumber);
+        }
+    }
+
+    const unique = [];
+    for (const pageNumber of ordered) {
+        if (!pageNumber || unique.includes(pageNumber)) {
+            continue;
+        }
+        unique.push(pageNumber);
+        if (unique.length >= MAX_CONTINUOUS_RENDER_PAGES) {
+            break;
+        }
+    }
+    return unique;
+}
+
+async function ensurePdfPageRendered(pageNumber, pdfDocument = state.pdf.document) {
+    const page = state.pageCache[pageNumber];
+    const pageNode = els.viewerPages.querySelector(`.paper-page[data-page-number="${pageNumber}"]`);
+    const canvas = pageNode?.querySelector(".page-canvas");
+    if (!page || !pageNode || !canvas || !pdfDocument) {
+        return;
+    }
+
+    const cssScale = getScaleForPage(page);
+    const outputScale = Math.max(window.devicePixelRatio || 1, 1);
+    const renderKey = `${cssScale.toFixed(3)}@${outputScale.toFixed(2)}`;
+    if (canvas.dataset.renderKey === renderKey) {
+        markPageRendered(pageNode);
+        return;
+    }
+
+    const previousTask = state.pdf.activeTasks.get(pageNumber);
+    if (previousTask) {
+        try {
+            previousTask.cancel();
+        }
+        catch (_error) {
+            // Ignore cancellation races when a page is re-rendered quickly.
+        }
+    }
+
+    if (!canvas.dataset.renderKey) {
+        markPageLoading(pageNode);
+    }
+
+    const generation = state.pdf.renderGeneration;
+    const pdfPage = await pdfDocument.getPage(pageNumber);
+    if (generation !== state.pdf.renderGeneration) {
+        pdfPage.cleanup();
+        return;
+    }
+
+    const cssViewport = pdfPage.getViewport({ scale: cssScale });
+    const renderViewport = pdfPage.getViewport({ scale: cssScale * outputScale });
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) {
+        pdfPage.cleanup();
+        return;
+    }
+
+    const stagingCanvas = document.createElement("canvas");
+    stagingCanvas.width = Math.max(1, Math.ceil(renderViewport.width));
+    stagingCanvas.height = Math.max(1, Math.ceil(renderViewport.height));
+    const stagingContext = stagingCanvas.getContext("2d", { alpha: false });
+    if (!stagingContext) {
+        pdfPage.cleanup();
+        return;
+    }
+    stagingContext.fillStyle = "#ffffff";
+    stagingContext.fillRect(0, 0, stagingCanvas.width, stagingCanvas.height);
+
+    const renderTask = pdfPage.render({
+        canvasContext: stagingContext,
+        viewport: renderViewport,
+    });
+    state.pdf.activeTasks.set(pageNumber, renderTask);
+
+    try {
+        await renderTask.promise;
+        if (generation === state.pdf.renderGeneration) {
+            canvas.width = stagingCanvas.width;
+            canvas.height = stagingCanvas.height;
+            canvas.style.width = `${cssViewport.width}px`;
+            canvas.style.height = `${cssViewport.height}px`;
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(stagingCanvas, 0, 0);
+            canvas.dataset.renderKey = renderKey;
+            markPageRendered(pageNode);
+        }
+    }
+    catch (error) {
+        if (error?.name !== "RenderingCancelledException") {
+            if (!canvas.dataset.renderKey) {
+                markPageLoading(pageNode);
+            }
+            throw error;
+        }
+    }
+    finally {
+        if (state.pdf.activeTasks.get(pageNumber) === renderTask) {
+            state.pdf.activeTasks.delete(pageNumber);
+        }
+        pdfPage.cleanup();
+    }
+}
+
+function markPageLoading(pageNode) {
+    pageNode.classList.add("is-loading");
+    pageNode.classList.remove("is-rendered");
+}
+
+function markPageRendered(pageNode) {
+    pageNode.classList.remove("is-loading");
+    pageNode.classList.add("is-rendered");
 }
 
 async function sendChatMessage() {
@@ -956,14 +1420,14 @@ async function runSelectionAction(mode) {
             role: "assistant",
             title: mode === "translate" ? "翻译结果" : "解释结果",
             content: data.text,
-            meta: "已结合论文上下文",
+            meta: "选中文本操作",
         });
         renderChat();
     }
     catch (error) {
         state.chatMessages.push({
             role: "assistant",
-            title: "处理失败",
+            title: "操作失败",
             content: error.message,
             meta: "selection action",
         });
@@ -1149,3 +1613,7 @@ function escapeAttribute(value) {
 }
 
 init();
+
+
+
+

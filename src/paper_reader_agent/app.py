@@ -7,11 +7,13 @@ from flask import Flask, jsonify, render_template, request, send_file, url_for
 from paper_reader_agent.config import load_config
 from paper_reader_agent.services.bridge import request_chat_completion, resolve_bridge_config
 from paper_reader_agent.services.context import build_chat_context, build_selection_context
-from paper_reader_agent.services.library import get_paper, import_uploaded_pdf, list_papers, save_paper, scan_library
+from paper_reader_agent.services.library import get_paper, import_uploaded_pdf, list_papers, scan_library
 from paper_reader_agent.services.papers import (
     build_document_payload,
+    ensure_page_cache,
     ensure_text_cache,
     generate_reading_guide,
+    kickoff_text_cache_warmup,
     load_all_pages,
     load_page,
     load_reading_guide,
@@ -52,7 +54,7 @@ def create_app() -> Flask:
     @app.get("/api/papers")
     def papers_index():
         records = list_papers(config)
-        return jsonify({"papers": [build_document_payload(config, record, include_guide=False) for record in records]})
+        return jsonify({"papers": [_paper_payload(config, record, include_guide=False) for record in records]})
 
     @app.post("/api/library/import")
     def import_pdf():
@@ -61,11 +63,10 @@ def create_app() -> Flask:
             return _error("请选择一个 PDF 文件。", 400)
         try:
             record = import_uploaded_pdf(config, file)
-            record = ensure_text_cache(config, record)
-            save_paper(config, record)
+            record = kickoff_text_cache_warmup(config, record)
         except Exception as error:
             return _error(f"导入 PDF 失败: {error}", 400)
-        return jsonify({"paper": build_document_payload(config, record, include_guide=True)})
+        return jsonify({"paper": _paper_payload(config, record, include_guide=True)})
 
     @app.post("/api/library/scan")
     def scan_library_route():
@@ -80,37 +81,50 @@ def create_app() -> Flask:
         return jsonify(
             {
                 "library_path": folder_path,
-                "papers": [build_document_payload(config, record, include_guide=False) for record in records],
+                "papers": [_paper_payload(config, record, include_guide=False) for record in records],
             }
         )
 
     @app.get("/api/papers/<paper_id>")
     def paper_detail(paper_id: str):
         try:
-            record = ensure_text_cache(config, get_paper(config, paper_id))
-            save_paper(config, record)
+            record = get_paper(config, paper_id)
+            record = kickoff_text_cache_warmup(config, record)
         except Exception as error:
             return _error(str(error), 400)
-        return jsonify({"paper": build_document_payload(config, record, include_guide=True)})
+        return jsonify({"paper": _paper_payload(config, record, include_guide=True)})
 
     @app.get("/api/papers/<paper_id>/pages/<int:page_number>")
     def page_detail(paper_id: str, page_number: int):
         try:
-            record = ensure_text_cache(config, get_paper(config, paper_id))
-            page = load_page(config, paper_id, page_number)
+            record = get_paper(config, paper_id)
+            record, page = ensure_page_cache(config, record, page_number)
         except Exception as error:
             return _error(str(error), 400)
         page["image_url"] = url_for("page_image", paper_id=paper_id, page_number=page_number)
-        return jsonify({"page": page, "paper": build_document_payload(config, record, include_guide=False)})
+        return jsonify({"page": page, "paper": _paper_payload(config, record, include_guide=False)})
 
     @app.get("/api/papers/<paper_id>/pages/<int:page_number>/image")
     def page_image(paper_id: str, page_number: int):
         try:
-            record = ensure_text_cache(config, get_paper(config, paper_id))
+            record = get_paper(config, paper_id)
             image_path = render_page_image(config, record, page_number)
         except Exception as error:
             return _error(str(error), 400)
         return send_file(image_path, mimetype="image/png", download_name=f"page-{page_number:04d}.png")
+
+    @app.get("/api/papers/<paper_id>/source")
+    def paper_source(paper_id: str):
+        try:
+            record = get_paper(config, paper_id)
+        except Exception as error:
+            return _error(str(error), 404)
+        return send_file(
+            record.source_path,
+            mimetype="application/pdf",
+            download_name=record.filename or f"{paper_id}.pdf",
+            conditional=True,
+        )
 
     @app.post("/api/papers/<paper_id>/reading-guide")
     def reading_guide_route(paper_id: str):
@@ -122,7 +136,7 @@ def create_app() -> Flask:
             guide = generate_reading_guide(config, bridge, record, force=force)
         except Exception as error:
             return _error(f"生成阅读导图失败: {error}", 500)
-        return jsonify({"reading_guide": guide, "paper": build_document_payload(config, record, include_guide=True)})
+        return jsonify({"reading_guide": guide, "paper": _paper_payload(config, record, include_guide=True)})
 
     @app.post("/api/papers/<paper_id>/chat")
     def paper_chat(paper_id: str):
@@ -232,6 +246,12 @@ def create_app() -> Flask:
         return jsonify({"text": answer})
 
     return app
+
+
+def _paper_payload(config, record, *, include_guide):
+    payload = build_document_payload(config, record, include_guide=include_guide)
+    payload["pdf_url"] = url_for("paper_source", paper_id=record.id)
+    return payload
 
 
 def _prepare_conversation(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
