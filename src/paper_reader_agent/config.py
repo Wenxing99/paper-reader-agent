@@ -36,7 +36,7 @@ def load_config() -> AppConfig:
         exports_root=exports_root,
         obsidian_root=obsidian_root,
         bridge_url=os.environ.get("PAPER_READER_BRIDGE_URL", "http://127.0.0.1:8765/v1"),
-        model=os.environ.get("PAPER_READER_MODEL", "gpt-5.4-mini"),
+        model=os.environ.get("PAPER_READER_MODEL", "gpt-5.4"),
         api_key=os.environ.get("PAPER_READER_API_KEY", ""),
         reasoning_effort=os.environ.get("PAPER_READER_REASONING_EFFORT", "").strip(),
         host=os.environ.get("PAPER_READER_HOST", "127.0.0.1"),

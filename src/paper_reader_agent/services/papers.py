@@ -6,7 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 
 import pdfplumber
 import pypdfium2 as pdfium
@@ -75,7 +75,7 @@ def ensure_text_cache(config: AppConfig, record: PaperRecord) -> PaperRecord:
     if record.guide_state == "stale":
         record.guide_state = "missing"
     record.updated_at = _now_iso()
-    save_paper(config, record)
+    _save_cache_record(config, record)
     return record
 
 
@@ -90,7 +90,7 @@ def kickoff_text_cache_warmup(config: AppConfig, record: PaperRecord) -> PaperRe
         if record.cache_state != "ready":
             record.cache_state = "ready"
             record.updated_at = _now_iso()
-            save_paper(config, record)
+            _save_cache_record(config, record)
         return record
 
     with CACHE_WARMUP_LOCK:
@@ -99,12 +99,12 @@ def kickoff_text_cache_warmup(config: AppConfig, record: PaperRecord) -> PaperRe
             if record.cache_state != "warming":
                 record.cache_state = "warming"
                 record.updated_at = _now_iso()
-                save_paper(config, record)
+                _save_cache_record(config, record)
             return record
 
         record.cache_state = "warming"
         record.updated_at = _now_iso()
-        save_paper(config, record)
+        _save_cache_record(config, record)
 
         future = CACHE_WARMUP_EXECUTOR.submit(_run_cache_warmup, config, record.id)
         CACHE_WARMUP_FUTURES[record.id] = future
@@ -148,7 +148,7 @@ def ensure_page_cache(config: AppConfig, record: PaperRecord, page_number: int) 
     else:
         record.cache_state = "partial"
     record.updated_at = _now_iso()
-    save_paper(config, record)
+    _save_cache_record(config, record)
     return record, payload
 
 
@@ -176,15 +176,22 @@ def generate_reading_guide(
     record: PaperRecord,
     *,
     force: bool = False,
+    on_stage: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     existing = load_reading_guide(config, record.id)
     if existing and not force and record.guide_state == "ready":
         return existing
 
+    if on_stage:
+        on_stage("build_context")
+
     pages = load_all_pages(config, record.id)
     labeled_text = build_labeled_document_text(pages, config.max_guide_chars)
     if not labeled_text:
         raise RuntimeError("没有可用于生成阅读导图的文本层。")
+
+    if on_stage:
+        on_stage("draft_guide")
 
     raw = request_chat_completion(
         bridge,
@@ -231,6 +238,9 @@ def generate_reading_guide(
         max_tokens=2200,
         temperature=0.2,
     )
+
+    if on_stage:
+        on_stage("finalize")
 
     normalized = normalize_reading_guide(_parse_loose_json(raw), record.title)
     normalized["model"] = bridge["model"]
@@ -513,7 +523,30 @@ def _complete_cache_warmup(config: AppConfig, paper_id: str, finished: Future[An
     record = PaperRecord.from_json(payload)
     record.cache_state = "partial" if _cached_page_count(config, paper_id) else "missing"
     record.updated_at = _now_iso()
+    _save_cache_record(config, record)
+
+
+def _save_cache_record(config: AppConfig, record: PaperRecord) -> None:
+    latest_payload = read_json(metadata_path(config, record.id), None)
+    if isinstance(latest_payload, dict) and latest_payload:
+        latest = PaperRecord.from_json(latest_payload)
+        record.created_at = latest.created_at or record.created_at
+        record.source_path = latest.source_path or record.source_path
+        record.storage_mode = latest.storage_mode or record.storage_mode
+        record.library_root = latest.library_root or record.library_root
+        record.library_relpath = latest.library_relpath or record.library_relpath
+        record.guide_state = _merge_cache_guide_state(latest.guide_state, record.guide_state)
     save_paper(config, record)
+
+
+def _merge_cache_guide_state(latest_state: str, next_state: str) -> str:
+    latest = str(latest_state or "").strip().lower()
+    proposed = str(next_state or "").strip().lower()
+    if latest in {"running", "ready", "failed"}:
+        return latest
+    if latest == "stale" and proposed == "missing":
+        return "missing"
+    return proposed or latest or "missing"
 
 
 def _now_iso() -> str:

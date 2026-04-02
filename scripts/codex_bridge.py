@@ -20,7 +20,7 @@ from typing import Any
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-DEFAULT_MODEL = os.environ.get("CODEX_BRIDGE_DEFAULT_MODEL") or os.environ.get("PAPER_READER_MODEL", "gpt-5.4-mini")
+DEFAULT_MODEL = os.environ.get("CODEX_BRIDGE_DEFAULT_MODEL") or os.environ.get("PAPER_READER_MODEL", "gpt-5.4")
 DEFAULT_REASONING_RAW = os.environ.get("CODEX_BRIDGE_DEFAULT_REASONING_EFFORT", "")
 DEFAULT_TIMEOUT_SEC = int(os.environ.get("CODEX_BRIDGE_TIMEOUT_SEC", "900"))
 DEFAULT_STREAM_CHUNK_SIZE = int(os.environ.get("CODEX_BRIDGE_STREAM_CHUNK_SIZE", "900"))

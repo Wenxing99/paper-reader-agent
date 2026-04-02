@@ -20,41 +20,23 @@ Execution rules:
 
 ## Current Priorities
 
-### P1. Markdown + Formula Rendering
+### P1. Reading Guide Progress Feedback Follow-Up
 
-Goal: make the left reading guide and right AI chat suitable for math and statistics papers.
+Goal: keep the new stage-based guide feedback honest, calm, and informative.
 
-Near-term tasks:
-- Render Markdown in the reading guide.
-- Render Markdown in chat responses.
-- Support inline math and block math.
-- Support basic lists, code blocks, and tables.
-- Keep a plain-text fallback so rendering failures do not make content unreadable.
-- Preserve copy, selection, and scrolling behavior after rendering.
+Current baseline:
+- The left column already shows stage-based progress while a reading-guide job is running.
+- The current implementation intentionally avoids fake numeric percentages.
 
-Implementation notes:
-- Prefer MIT-compatible libraries by default.
-- If a Markdown or LaTeX rendering library is added, check license compatibility first and update `THIRD_PARTY_NOTICES.md` in the same working session.
-- If HTML sanitization is needed, use an MIT-compatible safety layer.
+Observed issue to revisit later:
+- If the user imports a new paper and immediately starts guide generation, the visible progress can feel non-intuitive: stage 1 is visible, stage 3 often becomes visible, while stages 2 and 4 may appear to be skipped entirely.
 
-### P2. Reading Guide Progress Feedback
+Next tasks:
+- Refine current-stage wording and failure recovery hints.
+- Consider whether a very small secondary status near the top action bar adds value without stealing space from the paper.
+- Add true percentage only after backend work is split into measurable chunks.
 
-Goal: reduce uncertainty while a reading guide is being generated.
-
-Stage 1:
-- Show an explicit in-progress state inside the left column.
-- Use stage-based progress instead of fake percentages.
-- Example stages: read paper -> build context -> draft section summaries -> assemble reading guide.
-
-Stage 2:
-- Add true percentage progress only after backend work is split into measurable steps.
-- If feasible, add estimated remaining time or a clearer current-stage description.
-
-Design notes:
-- Do not add misleading fake progress bars.
-- Progress feedback should live in the left reading-guide area, not compete with the center PDF surface.
-
-### P3. PDF Reader Ergonomics
+### P2. PDF Reader Ergonomics
 
 Goal: keep improving the center PDF reader, but only through smaller independent releases.
 
@@ -70,16 +52,38 @@ Design notes:
 - Do not make the reader header tall again just to add more controls.
 - Any reader improvement must preserve continuous reading, independent scrolling, and import stability first.
 
+### P3. Stage A + Stage B Formula Selection Pilot
+
+Goal: prepare the first real implementation slice of the mixed-selection formula pipeline.
+
+Current baseline:
+- Selection rectangle capture and crop-debug preview are now wired into the existing selection-action flow.
+- The current slice is still debug-first: it validates region capture and crop fidelity before OCR is introduced.
+- The last local-OCR experiment was rejected because the latency and local model-loading cost were not acceptable for the product direction.
+
+Near-term tasks:
+- Start with selection-rectangle capture and cropped-image debugging output.
+- Keep the OCR backend replaceable from day one.
+- Avoid committing to a heavyweight OCR dependency before the crop/debug path is proven.
+- Feed Stage A output into Stage B only after the crop and OCR draft are inspectable.
+
+Design notes:
+- Treat mixed selections such as body text + theorem statement + complex formula as the target case.
+- Stage A + Stage B is an enhanced path for complex math-heavy selections, not the default path for every selection.
+- Normal prose selections should continue to use the lighter text-only path unless there is a clear reason to escalate.
+- Stage A and Stage B should remain separable for debugging and caching.
+- Keep the path MIT-compatible by default.
+
 ## Recommended Execution Order
 
-1. Markdown + Formula Rendering.
-2. Reading Guide Progress Feedback.
-3. PDF Reader Ergonomics in smaller steps.
+1. Reading Guide Progress Feedback Follow-Up.
+2. PDF Reader Ergonomics in smaller steps.
+3. Stage A + Stage B Formula Selection Pilot.
 
 Why this order:
-- Left and right rendering-layer work addresses a core user need and is less likely to break the PDF reader startup path.
-- Reading guide progress feedback improves waiting experience without requiring another reader-core rewrite.
-- PDF reader ergonomics still matter, but should now follow a much safer rollout rhythm.
+- Guide progress has already landed and can now be polished without reopening the old synchronous blocking flow.
+- PDF reader ergonomics still matter, but should continue to ship in smaller and safer steps.
+- Formula selection is strategically important, but should begin with a narrow debug-first slice once the smaller interaction surfaces remain stable.
 
 ## Stage A + Stage B Formula Understanding Path
 
@@ -94,25 +98,19 @@ Important product note:
 - Stage A + Stage B together are the full solution for mixed selections such as body text + theorem statement + complex formula, or similar math-heavy passages.
 - For this product, the end goal is not just formula OCR. The end goal is paper-aware understanding grounded in both the recovered math and the surrounding argument.
 
-Current recommendation ranking for Stage A candidates:
-1. Pix2Text
-2. TexTeller
-3. LaTeX-OCR / pix2tex
-4. Simple-LaTeX-OCR
+Current direction for Stage A:
+- keep the already-working crop-debug path;
+- do not ship a local OCR backend by default;
+- next try should send the cropped image to a vision-capable model that can recover LaTeX quickly;
+- Stage B should then interpret that recovered LaTeX in paper context.
 
-Why this order:
-- Pix2Text is the best fit for mixed regions that may contain theorem text plus formulas, and it appears to stay on the MIT-compatible path.
-- TexTeller looks especially strong for dense or multi-line formulas and is a strong second option, especially if we later support a formula-only routing path.
-- LaTeX-OCR / pix2tex is a mature pure-formula baseline and a good fallback if we want the simplest first OCR experiment.
-- Simple-LaTeX-OCR is worth watching, but not preferred for the first integration pass.
-
-Current exclusions:
-- Texo is not a default option because AGPL-3.0 conflicts with the current MIT-first direction.
-- Nougat is not a default option because the code and model-license story is not as clean for this repository's current path.
+Current cautions:
+- Local OCR backends remain interesting for research, but they are not the default product path after the recent latency test.
+- Any future vision-model route must still stay aligned with the repo's MIT-first shipped surface and local-first architecture.
 
 Roadmap implication:
 - If formula selection continues to be a core pain point after the current Markdown/math rendering improvements, the Stage A + Stage B path should be treated as a future high-value track.
-- The first implementation should keep the OCR backend replaceable and make the intermediate Stage A output visible for debugging and trust.
+- The next implementation should keep the crop/debug output visible for trust and use it as the handoff into a vision-capable Stage A.
 - Stage B should be designed as a paper-aware interpretation layer rather than a generic post-processing step.
 
 ## Open Questions

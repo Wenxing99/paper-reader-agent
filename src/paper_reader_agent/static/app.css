@@ -352,6 +352,106 @@ button {
     margin-top: 6px;
 }
 
+.guide-progress-card {
+    display: grid;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid rgba(89, 64, 39, 0.12);
+    border-radius: var(--radius-lg);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(250, 244, 234, 0.82));
+}
+
+.guide-progress-card--subtle {
+    background: rgba(255, 248, 237, 0.84);
+    border-style: dashed;
+}
+
+.guide-progress-card--failure {
+    border-color: rgba(178, 79, 45, 0.24);
+    background: linear-gradient(180deg, rgba(255, 247, 242, 0.94), rgba(252, 239, 231, 0.86));
+}
+
+.guide-progress-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.guide-progress-head strong {
+    font-family: Georgia, "Palatino Linotype", serif;
+}
+
+.guide-progress-head span,
+.guide-progress-note,
+.guide-progress-message,
+.guide-stage-meta span {
+    color: var(--muted);
+    line-height: 1.6;
+}
+
+.guide-progress-track {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.guide-progress-segment {
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(86, 63, 36, 0.12);
+}
+
+.guide-progress-segment.is-complete,
+.guide-progress-segment.is-current {
+    background: rgba(178, 79, 45, 0.72);
+}
+
+.guide-progress-segment.is-failed {
+    background: rgba(143, 58, 30, 0.82);
+}
+
+.guide-stage-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 10px;
+}
+
+.guide-stage-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+}
+
+.guide-stage-dot {
+    width: 10px;
+    height: 10px;
+    margin-top: 7px;
+    border-radius: 999px;
+    background: rgba(86, 63, 36, 0.18);
+}
+
+.guide-stage-item.is-complete .guide-stage-dot,
+.guide-stage-item.is-current .guide-stage-dot {
+    background: rgba(178, 79, 45, 0.78);
+}
+
+.guide-stage-item.is-failed .guide-stage-dot {
+    background: rgba(143, 58, 30, 0.86);
+}
+
+.guide-stage-meta strong {
+    display: block;
+    margin-bottom: 2px;
+}
+
+.guide-stage-meta span {
+    font-size: 12px;
+}
+
 .rich-text {
     color: var(--muted);
     font-size: 14px;
@@ -415,6 +515,48 @@ button {
     font-size: 0.94em;
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
+
+.selection-debug-block {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed rgba(89, 64, 39, 0.14);
+}
+
+.selection-debug-kicker {
+    margin: 0 0 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.selection-debug-preview {
+    margin: 0;
+    display: grid;
+    gap: 8px;
+}
+
+.selection-debug-preview img {
+    display: block;
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid rgba(89, 64, 39, 0.12);
+    background: rgba(255, 255, 255, 0.92);
+}
+
+.selection-debug-preview figcaption,
+.selection-debug-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.selection-debug-note.is-error {
+    color: #8f3a1e;
+}
+
 
 .rich-text pre {
     overflow: auto;

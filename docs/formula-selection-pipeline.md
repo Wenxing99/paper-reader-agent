@@ -125,11 +125,12 @@ Deliverables:
 - one working backend integration;
 - visible intermediate OCR output for debugging and trust.
 
-Recommended first backend:
-- Pix2Text
+Recommended next backend direction:
+- a vision-capable model route that receives the cropped selection image and returns best-effort LaTeX.
 
 Reason:
-- it appears to be the best fit for mixed regions containing theorem text plus formulas.
+- the crop-debug foundation already works;
+- a local OCR backend was tested and rejected because the latency and local model-loading cost were not acceptable for the intended product experience.
 
 ### Step 4: Stage B Explanation Path
 
@@ -151,47 +152,19 @@ Deliverables:
 - text-only fallback remains available for normal prose;
 - graceful degradation when OCR fails.
 
-## OCR Backend Ranking
+## Current Backend Direction
 
-Current ranking for Stage A candidates:
-1. Pix2Text
-2. TexTeller
-3. LaTeX-OCR / pix2tex
-4. Simple-LaTeX-OCR
+Current practical direction for Stage A:
+- keep the working crop-debug path as the baseline;
+- avoid shipping a local OCR backend by default for now;
+- use the crop as the handoff artifact into a vision-capable model that can recover LaTeX quickly enough for interactive use.
 
-### Pix2Text
+Why this is the current direction:
+- the crop path is already validated;
+- the recent local-OCR prototype proved that correctness alone is not enough if latency is too high;
+- the intended product experience is closer to "click and get a useful answer quickly" than "load and run a heavy local OCR stack".
 
-Why it ranks first:
-- best apparent fit for mixed selections containing both prose and formulas;
-- MIT-compatible path looks acceptable;
-- stronger product fit for the current selection problem.
-
-### TexTeller
-
-Why it ranks second:
-- especially attractive for dense, multi-line, or symbol-heavy formulas;
-- likely valuable later as a second backend for formula-only routing.
-
-### LaTeX-OCR / pix2tex
-
-Why it ranks third:
-- mature pure-formula baseline;
-- useful if the first OCR experiment should be as simple as possible.
-
-### Simple-LaTeX-OCR
-
-Why it ranks fourth:
-- worth tracking, but not preferred for the first integration pass.
-
-## Current Exclusions
-
-### Texo
-
-Not a default candidate because AGPL-3.0 conflicts with the current MIT-first direction.
-
-### Nougat
-
-Not a default candidate because the code and model-license story is less clean for this repository's current publication path.
+Local OCR remains a research branch, not the current default product path.
 
 ## Interface Design Notes
 

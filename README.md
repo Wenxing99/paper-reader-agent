@@ -18,6 +18,7 @@ Current priorities and staged implementation notes live in [ROADMAP.md](./ROADMA
 - repo-local `.venv` 独立环境
 - 导入单篇 PDF，或扫描本地论文目录
 - 生成整篇论文阅读导图
+- 生成阅读导图时，左栏会显示可信的阶段型进度反馈，不使用伪百分比
 - 顶部工具区压缩为紧凑操作条，尽量把可视空间留给 PDF
 - 中间列默认连续阅读整篇论文，也可切换回单页模式
 - 中间列支持缩放、适应宽度和跳页
@@ -36,6 +37,7 @@ Current priorities and staged implementation notes live in [ROADMAP.md](./ROADMA
 - 打开论文后，阅读器会先准备首批页面，剩余页面文本层随着滚动按需加载
 - 全文文本缓存会在后台继续补齐，这样可以兼顾“先开始读”和“后续导图 / chat 需要全文上下文”
 - 如果刚导入完就立刻发起整篇阅读导图或全文 chat，第一次仍可能等待全文缓存补完
+- 生成阅读导图时，左栏会按“读取论文 -> 构建全文上下文 -> 生成分段摘要 -> 合成阅读导图”显示当前阶段
 
 ## Open-Source Hygiene
 
@@ -171,7 +173,7 @@ bridge 启动器本身还支持这些变量：
 默认值：
 
 - bridge URL: `http://127.0.0.1:8765/v1`
-- model: `gpt-5.4-mini`
+- model: `gpt-5.4`
 - reasoning effort: bridge/model default
 - app host: `127.0.0.1`
 - app port: `8790`
@@ -252,7 +254,7 @@ start_paper_reader.cmd
 
 推荐用法：
 
-- model: `gpt-5.4` 或 `gpt-5.4-mini`
+- model: 默认 `gpt-5.4`，也可手动改成其他兼容模型
 - reasoning: `medium`
 - 更难的论文问答或导图生成：`high`
 - 如果你的 bridge 和模型支持，并且你愿意换更高时延/成本：`xhigh`
@@ -268,6 +270,7 @@ $env:PAPER_READER_REASONING_EFFORT="high"
 说明：
 
 - 项目会把这个值透传为 `reasoning_effort`
+- 本地 bridge 会继续把它转成 Codex CLI 的 `-c model_reasoning_effort=...` 参数
 - 如果留空，就交给 bridge 或模型默认行为
 - 输入 `median` 时，项目会自动按 `medium` 处理
 

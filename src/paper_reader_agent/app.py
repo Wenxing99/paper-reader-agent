@@ -8,19 +8,20 @@ from flask import Flask, jsonify, make_response, render_template, request, send_
 from paper_reader_agent.config import load_config
 from paper_reader_agent.services.bridge import request_chat_completion, resolve_bridge_config
 from paper_reader_agent.services.context import build_chat_context, build_selection_context
+from paper_reader_agent.services.guide_jobs import get_reading_guide_status, queue_reading_guide_generation
 from paper_reader_agent.services.library import get_paper, import_uploaded_pdf, list_papers, scan_library
+from paper_reader_agent.services.selection_regions import build_selection_debug_crop
 from paper_reader_agent.services.papers import (
     build_document_payload,
     ensure_page_cache,
     ensure_text_cache,
-    generate_reading_guide,
     kickoff_text_cache_warmup,
     load_all_pages,
     load_page,
     load_reading_guide,
     render_page_image,
 )
-from paper_reader_agent.services.storage import ensure_repo_dirs
+from paper_reader_agent.services.storage import ensure_repo_dirs, selection_debug_image_path
 
 
 def create_app() -> Flask:
@@ -137,17 +138,40 @@ def create_app() -> Flask:
             conditional=True,
         )
 
+    @app.get("/api/papers/<paper_id>/selection-debug-crops/<crop_id>.png")
+    def selection_debug_crop_image(paper_id: str, crop_id: str):
+        try:
+            image_path = selection_debug_image_path(config, paper_id, crop_id)
+            if not image_path.exists():
+                raise FileNotFoundError("\u9009\u533a\u88c1\u56fe\u8c03\u8bd5\u56fe\u50cf\u4e0d\u5b58\u5728\u3002")
+        except Exception as error:
+            return _error(str(error), 404)
+        return send_file(image_path, mimetype="image/png", download_name=f"selection-crop-{crop_id}.png")
+
     @app.post("/api/papers/<paper_id>/reading-guide")
     def reading_guide_route(paper_id: str):
         payload = request.get_json(silent=True) or {}
         force = bool(payload.get("force"))
         bridge = resolve_bridge_config(config, payload)
         try:
-            record = ensure_text_cache(config, get_paper(config, paper_id))
-            guide = generate_reading_guide(config, bridge, record, force=force)
+            record = get_paper(config, paper_id)
+            record, status, guide = queue_reading_guide_generation(config, bridge, record, force=force)
         except Exception as error:
             return _error(f"生成阅读导图失败: {error}", 500)
-        return jsonify({"reading_guide": guide, "paper": _paper_payload(config, record, include_guide=True)})
+
+        response = {"status": status, "paper": _paper_payload(config, record, include_guide=True)}
+        if guide:
+            response["reading_guide"] = guide
+        return jsonify(response)
+
+    @app.get("/api/papers/<paper_id>/reading-guide-status")
+    def reading_guide_status_route(paper_id: str):
+        try:
+            record = get_paper(config, paper_id)
+            status = get_reading_guide_status(config, record)
+        except Exception as error:
+            return _error(str(error), 400)
+        return jsonify({"status": status, "paper": _paper_payload(config, record, include_guide=True)})
 
     @app.post("/api/papers/<paper_id>/chat")
     def paper_chat(paper_id: str):
@@ -214,12 +238,26 @@ def create_app() -> Flask:
             return _error("不支持的 selection action。", 400)
 
         bridge = resolve_bridge_config(config, payload)
+        selection_region = payload.get("selection_region")
         try:
             record = ensure_text_cache(config, get_paper(config, paper_id))
             guide = load_reading_guide(config, paper_id)
             page_payload = load_page(config, paper_id, page_number) if page_number > 0 else None
         except Exception as error:
             return _error(str(error), 400)
+
+        debug_crop = None
+        debug_crop_error = ""
+        if page_payload and isinstance(selection_region, dict):
+            try:
+                debug_crop = build_selection_debug_crop(config, record, page_payload, selection_region)
+                debug_crop["image_url"] = url_for(
+                    "selection_debug_crop_image",
+                    paper_id=paper_id,
+                    crop_id=debug_crop["crop_id"],
+                )
+            except Exception as error:
+                debug_crop_error = str(error)
 
         context_text = build_selection_context(
             config,
@@ -254,7 +292,7 @@ def create_app() -> Flask:
             )
         except Exception as error:
             return _error(f"选中文本处理失败: {error}", 500)
-        return jsonify({"text": answer})
+        return jsonify({"text": answer, "debug_crop": debug_crop, "debug_crop_error": debug_crop_error})
 
     return app
 
@@ -262,6 +300,7 @@ def create_app() -> Flask:
 def _paper_payload(config, record, *, include_guide):
     payload = build_document_payload(config, record, include_guide=include_guide)
     payload["pdf_url"] = url_for("paper_source", paper_id=record.id)
+    payload["guide_progress"] = get_reading_guide_status(config, record)
     return payload
 
 

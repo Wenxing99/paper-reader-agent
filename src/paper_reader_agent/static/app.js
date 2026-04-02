@@ -1,20 +1,35 @@
 const shell = document.body;
+const DEFAULT_MODEL = shell.dataset.defaultModel || "gpt-5.4";
+
+function resolveInitialModel() {
+    const storedModel = localStorage.getItem("paperReaderAgent.model");
+    if (!storedModel) {
+        return DEFAULT_MODEL;
+    }
+    return storedModel === "gpt-5.4-mini" ? DEFAULT_MODEL : storedModel;
+}
 
 const state = {
     papers: [],
     currentPaper: null,
+    guideProgress: null,
+    guidePollTimer: 0,
+    guideToastPending: false,
+    guideDeferredStart: false,
+    guideWarmupPollTimer: 0,
     currentPage: 1,
     pageCache: {},
     pageRequests: new Map(),
     chatMessages: [],
     selectedText: "",
     selectedPage: 1,
+    selectedRegion: null,
     viewerRequestToken: 0,
     pageObserver: null,
     pageVisibility: new Map(),
     settings: {
         bridgeUrl: localStorage.getItem("paperReaderAgent.bridgeUrl") || shell.dataset.defaultBridgeUrl || "http://127.0.0.1:8765/v1",
-        model: localStorage.getItem("paperReaderAgent.model") || shell.dataset.defaultModel || "gpt-5.4-mini",
+        model: resolveInitialModel(),
         apiKey: localStorage.getItem("paperReaderAgent.apiKey") || "",
         reasoningEffort: localStorage.getItem("paperReaderAgent.reasoningEffort") || shell.dataset.defaultReasoningEffort || "",
         libraryPath: localStorage.getItem("paperReaderAgent.libraryPath") || "",
@@ -170,6 +185,311 @@ async function loadPapers(selectPaperId = null) {
     }
 }
 
+function applyCurrentPaperPayload(paper) {
+    if (!paper) {
+        return;
+    }
+
+    const currentPaper = state.currentPaper;
+    const currentProgress = state.guideProgress;
+    const mergedPaper = currentPaper ? { ...currentPaper, ...paper } : paper;
+    if (currentPaper?.reading_guide && !paper.reading_guide) {
+        mergedPaper.reading_guide = currentPaper.reading_guide;
+    }
+
+    const nextProgress = normalizeGuideProgress(paper.guide_progress || currentProgress);
+    const shouldHoldDeferredProgress = (
+        state.guideDeferredStart
+        && paper.cache_state === "warming"
+        && (!nextProgress || nextProgress.state === "idle" || nextProgress.state === "stale")
+    );
+
+    if (shouldHoldDeferredProgress || shouldPreserveGuideProgress(currentProgress, nextProgress)) {
+        if (currentProgress) {
+            mergedPaper.guide_progress = currentProgress;
+        }
+        state.currentPaper = mergedPaper;
+        return;
+    }
+
+    state.currentPaper = mergedPaper;
+    state.guideProgress = nextProgress;
+}
+
+function normalizeGuideProgress(progress) {
+    if (!progress || typeof progress !== "object") {
+        return null;
+    }
+
+    const stateValue = String(progress.state || "").trim().toLowerCase();
+    if (!["idle", "stale", "running", "ready", "failed"].includes(stateValue)) {
+        return null;
+    }
+
+    const steps = Array.isArray(progress.steps)
+        ? progress.steps.map((step) => ({
+            id: String(step?.id || "").trim(),
+            label: String(step?.label || "").trim(),
+            state: normalizeGuideStepState(step?.state),
+        }))
+        : [];
+
+    return {
+        state: stateValue,
+        stage: String(progress.stage || "").trim(),
+        stage_label: String(progress.stage_label || "").trim(),
+        badge: String(progress.badge || "").trim(),
+        message: String(progress.message || "").trim(),
+        error: String(progress.error || "").trim(),
+        updated_at: String(progress.updated_at || "").trim(),
+        steps,
+    };
+}
+
+function normalizeGuideStepState(value) {
+    const stateValue = String(value || "").trim().toLowerCase();
+    return ["pending", "current", "complete", "failed"].includes(stateValue) ? stateValue : "pending";
+}
+
+function isGuideProgressRunning(progress) {
+    return Boolean(progress && progress.state === "running");
+}
+
+function guideProgressStageIndex(progress) {
+    const stage = String(progress?.stage || "").trim();
+    return ["prepare_text", "build_context", "draft_guide", "finalize"].indexOf(stage);
+}
+
+function shouldPreserveGuideProgress(currentProgress, nextProgress) {
+    if (!currentProgress) {
+        return false;
+    }
+    if (!nextProgress) {
+        return ["running", "ready", "failed"].includes(currentProgress.state);
+    }
+
+    if (["ready", "failed"].includes(currentProgress.state) && ["idle", "stale"].includes(nextProgress.state)) {
+        return true;
+    }
+
+    if (currentProgress.state === "running") {
+        if (["idle", "stale"].includes(nextProgress.state)) {
+            return true;
+        }
+        if (nextProgress.state === "running") {
+            const currentIndex = guideProgressStageIndex(currentProgress);
+            const nextIndex = guideProgressStageIndex(nextProgress);
+            if (currentIndex > nextIndex && nextIndex >= 0) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+function buildDeferredGuideProgress() {
+    return {
+        state: "running",
+        stage: "prepare_text",
+        stage_label: "读取论文",
+        badge: "准备中",
+        message: "全文文本层仍在后台准备，准备好后会自动开始生成阅读导图。",
+        error: "",
+        updated_at: new Date().toISOString(),
+        steps: [
+            { id: "prepare_text", label: "读取论文", state: "current" },
+            { id: "build_context", label: "构建全文上下文", state: "pending" },
+            { id: "draft_guide", label: "生成分段摘要", state: "pending" },
+            { id: "finalize", label: "合成阅读导图", state: "pending" },
+        ],
+    };
+}
+
+function stopDeferredGuideStart() {
+    if (state.guideWarmupPollTimer) {
+        window.clearTimeout(state.guideWarmupPollTimer);
+        state.guideWarmupPollTimer = 0;
+    }
+    state.guideDeferredStart = false;
+}
+
+async function requestReadingGuideGeneration() {
+    if (!state.currentPaper) {
+        return;
+    }
+
+    setBusy(els.generateGuideButton, true, "生成中...");
+
+    try {
+        const data = await api(`/api/papers/${state.currentPaper.id}/reading-guide`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestConfigBody()),
+        });
+
+        applyCurrentPaperPayload(data.paper);
+        state.guideProgress = normalizeGuideProgress(data.status || state.currentPaper?.guide_progress);
+        if (data.reading_guide && state.currentPaper) {
+            state.currentPaper.reading_guide = data.reading_guide;
+        }
+
+        renderGuide(state.currentPaper?.reading_guide || null);
+        refreshReaderHeader();
+
+        if (data.reading_guide || state.guideProgress?.state === "ready") {
+            state.guideToastPending = false;
+            showToast("阅读导图已生成。");
+        }
+        else if (isGuideProgressRunning(state.guideProgress) && state.currentPaper) {
+            startGuidePolling(state.currentPaper.id);
+        }
+        else if (state.guideProgress?.state === "failed") {
+            state.guideToastPending = false;
+            showToast(state.guideProgress.error || "生成阅读导图失败。");
+        }
+    }
+    catch (error) {
+        state.guideToastPending = false;
+        els.guideStatus.textContent = "失败";
+        showToast(error.message);
+    }
+    finally {
+        updateActionAvailability();
+    }
+}
+
+function startDeferredGuideStart() {
+    stopDeferredGuideStart();
+    if (!state.currentPaper) {
+        return;
+    }
+
+    const paperId = state.currentPaper.id;
+    state.guideDeferredStart = true;
+    state.guideProgress = buildDeferredGuideProgress();
+    renderGuide(state.currentPaper?.reading_guide || null);
+    refreshReaderHeader();
+    updateActionAvailability();
+
+    const pollCacheWarmup = async () => {
+        if (!state.currentPaper || state.currentPaper.id !== paperId || !state.guideDeferredStart) {
+            stopDeferredGuideStart();
+            return;
+        }
+
+        try {
+            const data = await api(`/api/papers/${paperId}`);
+            if (!state.currentPaper || state.currentPaper.id !== paperId || !state.guideDeferredStart) {
+                stopDeferredGuideStart();
+                return;
+            }
+
+            applyCurrentPaperPayload(data.paper);
+            if (state.currentPaper.cache_state === "warming") {
+                state.guideProgress = buildDeferredGuideProgress();
+                renderGuide(state.currentPaper?.reading_guide || null);
+                refreshReaderHeader();
+                updateActionAvailability();
+                state.guideWarmupPollTimer = window.setTimeout(() => {
+                    void pollCacheWarmup();
+                }, 1000);
+                return;
+            }
+
+            state.guideProgress = {
+                ...buildDeferredGuideProgress(),
+                badge: "\u542f\u52a8\u4e2d",
+                message: "\u5168\u6587\u6587\u672c\u5c42\u5df2\u51c6\u5907\u597d\uff0c\u6b63\u5728\u542f\u52a8\u9605\u8bfb\u5bfc\u56fe\u751f\u6210\u3002",
+                updated_at: new Date().toISOString(),
+            };
+            renderGuide(state.currentPaper?.reading_guide || null);
+            refreshReaderHeader();
+            updateActionAvailability();
+            await requestReadingGuideGeneration();
+            if (state.guideDeferredStart && !isGuideProgressRunning(state.guideProgress)) {
+                stopDeferredGuideStart();
+            }
+        }
+        catch (error) {
+            stopDeferredGuideStart();
+            state.guideToastPending = false;
+            state.guideProgress = normalizeGuideProgress(state.currentPaper?.guide_progress);
+            renderGuide(state.currentPaper?.reading_guide || null);
+            updateActionAvailability();
+            showToast(error.message);
+        }
+    };
+
+    void pollCacheWarmup();
+}
+
+function stopGuidePolling() {
+    if (state.guidePollTimer) {
+        window.clearTimeout(state.guidePollTimer);
+        state.guidePollTimer = 0;
+    }
+}
+
+function startGuidePolling(paperId) {
+    stopGuidePolling();
+    stopDeferredGuideStart();
+    if (!paperId) {
+        return;
+    }
+
+    const pollStatus = async () => {
+        if (!state.currentPaper || state.currentPaper.id !== paperId) {
+            stopGuidePolling();
+            return;
+        }
+
+        try {
+            const data = await api(`/api/papers/${paperId}/reading-guide-status`);
+            if (!state.currentPaper || state.currentPaper.id !== paperId) {
+                stopGuidePolling();
+                return;
+            }
+
+            applyCurrentPaperPayload(data.paper);
+            state.guideProgress = normalizeGuideProgress(data.status || state.currentPaper?.guide_progress);
+            renderGuide(state.currentPaper?.reading_guide || null);
+            refreshReaderHeader();
+            updateActionAvailability();
+
+            if (isGuideProgressRunning(state.guideProgress)) {
+                state.guidePollTimer = window.setTimeout(() => {
+                    void pollStatus();
+                }, 1200);
+                return;
+            }
+
+            stopGuidePolling();
+            if (state.guideProgress?.state === "ready") {
+                if (state.guideToastPending) {
+                    showToast("阅读导图已生成。");
+                }
+            }
+            else if (state.guideProgress?.state === "failed") {
+                if (state.guideToastPending) {
+                    showToast(state.guideProgress.error || "生成阅读导图失败。");
+                }
+            }
+            state.guideToastPending = false;
+        }
+        catch (error) {
+            stopGuidePolling();
+            if (state.guideToastPending) {
+                showToast(error.message);
+            }
+            state.guideToastPending = false;
+            updateActionAvailability();
+        }
+    };
+
+    void pollStatus();
+}
+
 function renderPaperSelect() {
     const activeId = state.currentPaper?.id || "";
     const options = ['<option value="">选择论文…</option>'];
@@ -240,26 +560,35 @@ async function scanLibrary() {
 async function openPaper(paperId) {
     try {
         const data = await api(`/api/papers/${paperId}`);
+        stopGuidePolling();
+        stopDeferredGuideStart();
         resetPdfDocument();
-        state.currentPaper = data.paper;
+        state.currentPaper = data.paper || null;
+        state.guideProgress = normalizeGuideProgress(data.paper?.guide_progress);
         state.currentPage = 1;
         state.pageCache = {};
         state.pageRequests = new Map();
         state.chatMessages = [];
         state.selectedText = "";
         state.selectedPage = 1;
+        state.selectedRegion = null;
+        state.guideToastPending = false;
         state.viewerRequestToken += 1;
         disconnectPageObserver();
         state.pageVisibility.clear();
 
         renderPaperSelect();
-        renderGuide(state.currentPaper.reading_guide || null);
+        renderGuide(state.currentPaper?.reading_guide || null);
         populatePageSelect();
         renderChat();
         refreshReaderHeader();
         renderViewer();
         updateActionAvailability();
         clearSelection();
+
+        if (isGuideProgressRunning(state.guideProgress) && state.currentPaper) {
+            startGuidePolling(state.currentPaper.id);
+        }
 
         await loadReaderForCurrentMode({ scrollToCurrent: true, behavior: "auto" });
     }
@@ -365,7 +694,7 @@ async function ensurePageLoaded(pageNumber) {
                 return null;
             }
             if (data.paper) {
-                state.currentPaper = { ...state.currentPaper, ...data.paper };
+                applyCurrentPaperPayload(data.paper);
             }
             const page = data.page || null;
             if (!page) {
@@ -883,18 +1212,24 @@ function handleSelectionChange() {
     const selection = window.getSelection();
     const text = selection?.toString().trim();
     if (!text || !selection.anchorNode || !els.viewerPages.contains(toElement(selection.anchorNode))) {
+        state.selectedText = "";
+        state.selectedRegion = null;
         hideSelectionPopover();
         return;
     }
 
     const range = selection.rangeCount ? selection.getRangeAt(0) : null;
     if (!range) {
+        state.selectedText = "";
+        state.selectedRegion = null;
         hideSelectionPopover();
         return;
     }
 
     const rect = range.getBoundingClientRect();
     if (!rect || (!rect.width && !rect.height)) {
+        state.selectedText = "";
+        state.selectedRegion = null;
         hideSelectionPopover();
         return;
     }
@@ -902,13 +1237,98 @@ function handleSelectionChange() {
     const selectionRoot = toElement(range.commonAncestorContainer) || toElement(selection.anchorNode);
     const pageNode = selectionRoot?.closest(".paper-page");
     if (!pageNode) {
+        state.selectedText = "";
+        state.selectedRegion = null;
         hideSelectionPopover();
         return;
     }
 
     state.selectedText = text.slice(0, 5000);
     state.selectedPage = Number(pageNode.dataset.pageNumber || state.currentPage);
+    state.selectedRegion = buildSelectionRegion(pageNode, range, state.selectedPage);
     showSelectionPopover(rect);
+}
+
+function buildSelectionRegion(pageNode, range, pageNumber) {
+    const page = state.pageCache[pageNumber];
+    const stage = pageNode?.querySelector(".page-stage");
+    if (!page || !stage) {
+        return null;
+    }
+
+    const scale = getScaleForPage(page);
+    const stageRect = stage.getBoundingClientRect();
+    if (!scale || !stageRect.width || !stageRect.height) {
+        return null;
+    }
+
+    const rects = [];
+    for (const clientRect of Array.from(range.getClientRects())) {
+        const nextRect = normalizeSelectionClientRect(clientRect, stageRect, scale);
+        if (nextRect) {
+            rects.push(nextRect);
+        }
+    }
+
+    if (!rects.length) {
+        const fallbackRect = normalizeSelectionClientRect(range.getBoundingClientRect(), stageRect, scale);
+        if (fallbackRect) {
+            rects.push(fallbackRect);
+        }
+    }
+
+    if (!rects.length) {
+        return null;
+    }
+
+    const bounds = rects.reduce((current, rect) => {
+        if (!current) {
+            return { ...rect };
+        }
+        const left = Math.min(current.x, rect.x);
+        const top = Math.min(current.y, rect.y);
+        const right = Math.max(current.x + current.width, rect.x + rect.width);
+        const bottom = Math.max(current.y + current.height, rect.y + rect.height);
+        return {
+            x: roundSelectionValue(left),
+            y: roundSelectionValue(top),
+            width: roundSelectionValue(right - left),
+            height: roundSelectionValue(bottom - top),
+        };
+    }, null);
+
+    return {
+        page_number: pageNumber,
+        page_width: roundSelectionValue(page.width),
+        page_height: roundSelectionValue(page.height),
+        bounds,
+        rects,
+    };
+}
+
+function normalizeSelectionClientRect(rect, stageRect, scale) {
+    if (!rect || !rect.width || !rect.height) {
+        return null;
+    }
+
+    const left = Math.max(rect.left, stageRect.left);
+    const top = Math.max(rect.top, stageRect.top);
+    const right = Math.min(rect.right, stageRect.right);
+    const bottom = Math.min(rect.bottom, stageRect.bottom);
+    if (right <= left || bottom <= top) {
+        return null;
+    }
+
+    return {
+        x: roundSelectionValue((left - stageRect.left) / scale),
+        y: roundSelectionValue((top - stageRect.top) / scale),
+        width: roundSelectionValue((right - left) / scale),
+        height: roundSelectionValue((bottom - top) / scale),
+    };
+}
+
+function roundSelectionValue(value) {
+    return Math.round(Number(value || 0) * 1000) / 1000;
 }
 
 function showSelectionPopover(rect) {
@@ -937,43 +1357,100 @@ async function generateReadingGuide() {
     if (!state.currentPaper) {
         return;
     }
+
     setBusy(els.generateGuideButton, true, "生成中...");
-    els.guideStatus.textContent = "生成中";
+    state.guideToastPending = true;
+
     try {
         const data = await api(`/api/papers/${state.currentPaper.id}/reading-guide`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(requestConfigBody()),
         });
-        state.currentPaper = data.paper;
-        renderGuide(data.reading_guide);
+
+        applyCurrentPaperPayload(data.paper);
+        state.guideProgress = normalizeGuideProgress(data.status || state.currentPaper?.guide_progress);
+        if (data.reading_guide && state.currentPaper) {
+            state.currentPaper.reading_guide = data.reading_guide;
+        }
+
+        renderGuide(state.currentPaper?.reading_guide || null);
         refreshReaderHeader();
-        await loadPapers(state.currentPaper.id);
-        showToast("阅读导图已生成。");
+
+        if (data.reading_guide || state.guideProgress?.state === "ready") {
+            state.guideToastPending = false;
+            showToast("阅读导图已生成。");
+        }
+        else if (isGuideProgressRunning(state.guideProgress) && state.currentPaper) {
+            startGuidePolling(state.currentPaper.id);
+        }
+        else if (state.guideProgress?.state === "failed") {
+            state.guideToastPending = false;
+            showToast(state.guideProgress.error || "生成阅读导图失败。");
+        }
     }
     catch (error) {
+        state.guideToastPending = false;
         els.guideStatus.textContent = "失败";
         showToast(error.message);
     }
     finally {
-        setBusy(els.generateGuideButton, false, "生成阅读导图");
         updateActionAvailability();
     }
 }
 
 function renderGuide(guide) {
-    if (!state.currentPaper || !guide) {
-        els.guideStatus.textContent = state.currentPaper ? "待生成" : "待打开";
+    const progress = normalizeGuideProgress(state.guideProgress || state.currentPaper?.guide_progress);
+    state.guideProgress = progress;
+
+    if (!state.currentPaper) {
+        els.guideStatus.textContent = "待打开";
         els.guidePanel.className = "guide-panel empty-state";
-        els.guidePanel.textContent = state.currentPaper
-            ? "点击“生成阅读导图”后，这里会显示整篇论文的一句话总结、背景、问题、创新、方法、结果、局限和建议阅读顺序。"
-            : "先打开一篇论文，再生成整篇阅读导图。";
+        els.guidePanel.textContent = "先打开一篇论文，再生成整篇阅读导图。";
         return;
     }
 
-    els.guideStatus.textContent = guide.model ? `已生成 · ${guide.model}` : "已生成";
+    if (progress?.state === "running") {
+        els.guideStatus.textContent = progress.badge || "生成中";
+        els.guidePanel.className = "guide-panel";
+        els.guidePanel.innerHTML = renderGuideProgress(progress);
+        return;
+    }
+
+    if (!guide) {
+        if (progress?.state === "failed") {
+            els.guideStatus.textContent = progress.badge || "失败";
+            els.guidePanel.className = "guide-panel";
+            els.guidePanel.innerHTML = renderGuideFailure(progress, false);
+            return;
+        }
+
+        els.guideStatus.textContent = progress?.badge || "待生成";
+        els.guidePanel.className = "guide-panel empty-state";
+        if (progress?.state === "stale") {
+            els.guidePanel.textContent = "论文内容已更新，建议重新生成阅读导图。";
+        }
+        else {
+            els.guidePanel.textContent = "点击“生成阅读导图”后，这里会显示整篇论文的一句话总结、背景、问题、创新、方法、结果、局限和建议阅读顺序。";
+        }
+        return;
+    }
+
+    const blocks = [];
+    if (progress?.state === "failed") {
+        els.guideStatus.textContent = progress.badge || "失败";
+        blocks.push(renderGuideFailure(progress, true));
+    }
+    else if (progress?.state === "stale") {
+        els.guideStatus.textContent = progress.badge || "待更新";
+        blocks.push(renderGuideStaleNotice(progress));
+    }
+    else {
+        els.guideStatus.textContent = guide.model ? `已生成 · ${guide.model}` : (progress?.badge || "已生成");
+    }
+
     els.guidePanel.className = "guide-panel";
-    els.guidePanel.innerHTML = [
+    blocks.push(
         `
             <section class="guide-intro">
                 <strong>${escapeHtml(guide.paper_title || state.currentPaper.title)}</strong>
@@ -988,7 +1465,8 @@ function renderGuide(guide) {
         renderGuideGroup("局限", guide.limitations),
         renderGuideGroup("建议阅读顺序", guide.reading_guide),
         renderGuideSections(guide.sections),
-    ].join("");
+    );
+    els.guidePanel.innerHTML = blocks.join("");
 }
 
 function renderGuideGroup(title, items) {
@@ -1021,6 +1499,73 @@ function renderGuideSections(sections) {
             <div class="rich-text guide-rich-text">${renderMarkdownList(sectionBullets)}</div>
         </section>
     `;
+}
+
+function renderGuideProgress(progress) {
+    const segments = (progress.steps || []).map((step) => `
+        <span class="guide-progress-segment is-${escapeHtml(step.state)}" aria-hidden="true"></span>
+    `).join("");
+    const steps = (progress.steps || []).map((step) => `
+        <li class="guide-stage-item is-${escapeHtml(step.state)}">
+            <span class="guide-stage-dot" aria-hidden="true"></span>
+            <div class="guide-stage-meta">
+                <strong>${escapeHtml(step.label || step.id)}</strong>
+                <span>${escapeHtml(describeGuideStepState(step.state))}</span>
+            </div>
+        </li>
+    `).join("");
+
+    return `
+        <section class="guide-progress-card">
+            <div class="guide-progress-head">
+                <strong>阅读导图生成中</strong>
+                <span>${escapeHtml(progress.stage_label || progress.badge || "")}</span>
+            </div>
+            <div class="guide-progress-track" aria-hidden="true">${segments}</div>
+            <p class="guide-progress-message">${escapeHtml(progress.message || "正在准备阅读导图。")}</p>
+            <ol class="guide-stage-list">${steps}</ol>
+        </section>
+    `;
+}
+
+function renderGuideFailure(progress, inline) {
+    const title = inline
+        ? "本次重新生成失败"
+        : "阅读导图生成失败";
+    const hint = inline
+        ? "下方保留了上一份导图，你可以稍后再试一次。"
+        : "可以再次点击“生成阅读导图”重试。";
+    return `
+        <section class="guide-progress-card guide-progress-card--failure">
+            <div class="guide-progress-head">
+                <strong>${title}</strong>
+                <span>${escapeHtml(progress.stage_label || progress.badge || "")}</span>
+            </div>
+            <p class="guide-progress-message">${escapeHtml(progress.error || progress.message || "本次生成未完成。")}</p>
+            <p class="guide-progress-note">${hint}</p>
+        </section>
+    `;
+}
+
+function renderGuideStaleNotice(progress) {
+    return `
+        <section class="guide-progress-card guide-progress-card--subtle">
+            <div class="guide-progress-head">
+                <strong>导图需要更新</strong>
+                <span>${escapeHtml(progress.badge || "待更新")}</span>
+            </div>
+            <p class="guide-progress-message">${escapeHtml(progress.message || "论文内容已更新，建议重新生成阅读导图。")}</p>
+        </section>
+    `;
+}
+
+function describeGuideStepState(stepState) {
+    return {
+        pending: "待开始",
+        current: "进行中",
+        complete: "已完成",
+        failed: "失败",
+    }[stepState] || "待开始";
 }
 
 async function loadPdfJs() {
@@ -1402,7 +1947,8 @@ async function runSelectionAction(mode) {
 
     const targetPage = state.selectedPage || state.currentPage;
     const label = mode === "translate" ? "翻译选中文本" : "解释选中文本";
-    const requestText = `${label}：\n${state.selectedText}`;
+    const requestText = `${label}：
+${state.selectedText}`;
     state.chatMessages.push({
         role: "user",
         title: `${label} · 第 ${targetPage} 页`,
@@ -1421,6 +1967,7 @@ async function runSelectionAction(mode) {
                 page: targetPage,
                 text: state.selectedText,
                 mode,
+                selection_region: state.selectedRegion,
             }),
         });
         state.chatMessages.push({
@@ -1428,6 +1975,8 @@ async function runSelectionAction(mode) {
             title: mode === "translate" ? "翻译结果" : "解释结果",
             content: data.text,
             meta: "选中文本操作",
+            debugCrop: data.debug_crop || null,
+            debugCropError: data.debug_crop_error || "",
         });
         renderChat();
     }
@@ -1465,14 +2014,49 @@ function renderChat() {
             <p class="meta-line">${escapeHtml(message.role === "user" ? "你" : "AI")} · ${escapeHtml(message.meta || "")}</p>
             <strong>${escapeHtml(message.title || (message.role === "user" ? "问题" : "回答"))}</strong>
             <div class="rich-text chat-rich-text">${renderMarkdownContent(message.content)}</div>
+            ${renderSelectionDebugBlock(message)}
         </section>
     `).join("");
     els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
 }
 
+function renderSelectionDebugBlock(message) {
+    const debugCrop = message.debugCrop;
+    const debugCropError = String(message.debugCropError || "").trim();
+    if (!debugCrop && !debugCropError) {
+        return "";
+    }
+
+    const parts = [
+        '<div class="selection-debug-block">',
+        '<p class="selection-debug-kicker">Selection Crop Debug</p>',
+    ];
+
+    if (debugCrop?.image_url) {
+        parts.push(`
+            <figure class="selection-debug-preview">
+                <img src="${escapeHtml(debugCrop.image_url)}" alt="选区裁图调试预览" loading="lazy">
+                <figcaption>第 ${escapeHtml(String(debugCrop.page_number || ""))} 页 · 裁图 ${escapeHtml(String(debugCrop.pixel_bounds?.width || "?"))} × ${escapeHtml(String(debugCrop.pixel_bounds?.height || "?"))} px</figcaption>
+            </figure>
+        `);
+    }
+
+    if (debugCropError) {
+        parts.push(`<p class="selection-debug-note is-error">裁图调试未生成：${escapeHtml(debugCropError)}</p>`);
+    }
+    else {
+        parts.push('<p class="selection-debug-note">这是当前选区的调试裁图，用于后续 Stage A OCR 路径验证。</p>');
+    }
+
+    parts.push('</div>');
+    return parts.join("");
+}
+
 function clearSelection() {
+
     state.selectedText = "";
     state.selectedPage = state.currentPage;
+    state.selectedRegion = null;
     hideSelectionPopover();
     if (window.getSelection) {
         window.getSelection().removeAllRanges();
@@ -1481,7 +2065,9 @@ function clearSelection() {
 
 function updateActionAvailability() {
     const hasPaper = Boolean(state.currentPaper);
-    els.generateGuideButton.disabled = !hasPaper;
+    const guideRunning = isGuideProgressRunning(state.guideProgress);
+    els.generateGuideButton.disabled = !hasPaper || guideRunning;
+    els.generateGuideButton.textContent = guideRunning ? "生成中..." : "生成阅读导图";
     els.chatSendButton.disabled = !hasPaper;
 }
 
@@ -1497,7 +2083,7 @@ function requestConfigBody() {
 
 function persistSettings() {
     state.settings.bridgeUrl = els.bridgeUrlInput.value.trim() || shell.dataset.defaultBridgeUrl || "http://127.0.0.1:8765/v1";
-    state.settings.model = els.modelInput.value.trim() || shell.dataset.defaultModel || "gpt-5.4-mini";
+    state.settings.model = els.modelInput.value.trim() || DEFAULT_MODEL;
     state.settings.reasoningEffort = normalizeReasoningEffort(els.reasoningEffortSelect.value);
     state.settings.apiKey = els.apiKeyInput.value;
     state.settings.libraryPath = els.libraryPathInput.value.trim();

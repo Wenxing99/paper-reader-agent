@@ -24,6 +24,10 @@ def guide_path(config: AppConfig, paper_id: str) -> Path:
     return paper_dir(config, paper_id) / "reading_guide.json"
 
 
+def guide_status_path(config: AppConfig, paper_id: str) -> Path:
+    return paper_dir(config, paper_id) / "reading_guide_status.json"
+
+
 def pages_dir(config: AppConfig, paper_id: str) -> Path:
     return paper_dir(config, paper_id) / "pages"
 
@@ -34,6 +38,18 @@ def page_path(config: AppConfig, paper_id: str, page_number: int) -> Path:
 
 def renders_dir(config: AppConfig, paper_id: str) -> Path:
     return paper_dir(config, paper_id) / "renders"
+
+
+def selection_debug_dir(config: AppConfig, paper_id: str) -> Path:
+    return paper_dir(config, paper_id) / "selection_debug"
+
+
+def selection_debug_image_path(config: AppConfig, paper_id: str, crop_id: str) -> Path:
+    return selection_debug_dir(config, paper_id) / f"{crop_id}.png"
+
+
+def selection_debug_meta_path(config: AppConfig, paper_id: str, crop_id: str) -> Path:
+    return selection_debug_dir(config, paper_id) / f"{crop_id}.json"
 
 
 def read_json(path: Path, default: Any) -> Any:
