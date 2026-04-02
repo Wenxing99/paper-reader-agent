@@ -300,6 +300,17 @@ Avoid:
 - UI rendering;
 - export/integration layers.
 
+## License Guardrails
+
+This repository should remain publishable under the MIT license unless the user explicitly approves a different direction.
+
+Therefore:
+- prefer MIT, BSD, Apache-2.0, or similarly MIT-compatible dependencies and implementation paths;
+- do not introduce AGPL, GPL, SSPL, commercial-only, or other strong-copyleft / restricted dependencies by default;
+- when evaluating a new dependency or vendored asset, check license compatibility before implementation, not afterward;
+- if a new dependency becomes part of the shipped app, update `THIRD_PARTY_NOTICES.md` in the same working session;
+- if license compatibility is unclear, stop and surface the uncertainty before proceeding.
+
 ## Agent Workflow Rules
 
 Agents working in this repo should follow this order:
@@ -308,7 +319,7 @@ Agents working in this repo should follow this order:
 2. Preserve the product direction described here unless explicitly updated by the user.
 3. When a requested change conflicts with this file, surface the conflict clearly instead of silently drifting.
 4. Prefer small, testable increments.
-5. Keep architecture documents and this file aligned with real product changes.
+5. Keep architecture documents, `ROADMAP.md`, and this file aligned with real product changes.
 6. When editing user-facing Chinese text, preserve UTF-8, avoid shell-based rewrites that may corrupt encoding, and re-scan for mojibake/placeholder strings before finishing.
 
 ## Definition Of Success For Near-Term Iterations

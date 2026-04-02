@@ -88,6 +88,12 @@ const PDFJS_MODULE_URL = `${PDFJS_BASE}build/pdf.mjs`;
 const PDFJS_WORKER_URL = `${PDFJS_BASE}build/pdf.worker.mjs`;
 const MAX_CONTINUOUS_RENDER_PAGES = 4;
 const INITIAL_CONTINUOUS_PAGE_LOAD_COUNT = 1;
+const RICH_TEXT_MATH_DELIMITERS = [
+    { left: "$$", right: "$$", display: true },
+    { left: "\\[", right: "\\]", display: true },
+    { left: "$", right: "$", display: false },
+    { left: "\\(", right: "\\)", display: false },
+];
 
 function init() {
     els.bridgeUrlInput.value = state.settings.bridgeUrl;
@@ -971,7 +977,7 @@ function renderGuide(guide) {
         `
             <section class="guide-intro">
                 <strong>${escapeHtml(guide.paper_title || state.currentPaper.title)}</strong>
-                <p>${escapeHtml(guide.one_sentence || "暂无一句话总结。")}</p>
+                <div class="rich-text guide-rich-text">${renderMarkdownContent(guide.one_sentence || "暂无一句话总结。")}</div>
             </section>
         `,
         renderGuideGroup("研究背景", guide.background),
@@ -993,7 +999,7 @@ function renderGuideGroup(title, items) {
     return `
         <section class="guide-group">
             <h3>${escapeHtml(title)}</h3>
-            <ul>${cleanItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+            <div class="rich-text guide-rich-text">${renderMarkdownList(cleanItems)}</div>
         </section>
     `;
 }
@@ -1003,15 +1009,16 @@ function renderGuideSections(sections) {
     if (!cleanSections.length) {
         return "";
     }
+    const sectionBullets = cleanSections.map((section) => {
+        const pageHint = section.page_hint ? ` (约第 ${section.page_hint} 页)` : "";
+        const title = escapeMarkdownText(section.title || "");
+        const summary = String(section.summary || "").trim();
+        return `**${title}${escapeMarkdownText(pageHint)}**${summary ? `: ${summary}` : ""}`;
+    });
     return `
         <section class="guide-group">
             <h3>重要内容单元</h3>
-            <ul>
-                ${cleanSections.map((section) => {
-                    const pageHint = section.page_hint ? `（约第 ${section.page_hint} 页）` : "";
-                    return `<li>${escapeHtml(section.title)}${escapeHtml(pageHint)}：${escapeHtml(section.summary || "")}</li>`;
-                }).join("")}
-            </ul>
+            <div class="rich-text guide-rich-text">${renderMarkdownList(sectionBullets)}</div>
         </section>
     `;
 }
@@ -1457,7 +1464,7 @@ function renderChat() {
         <section class="chat-card ${message.role}">
             <p class="meta-line">${escapeHtml(message.role === "user" ? "你" : "AI")} · ${escapeHtml(message.meta || "")}</p>
             <strong>${escapeHtml(message.title || (message.role === "user" ? "问题" : "回答"))}</strong>
-            <p>${escapeHtml(message.content)}</p>
+            <div class="rich-text chat-rich-text">${renderMarkdownContent(message.content)}</div>
         </section>
     `).join("");
     els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
@@ -1595,6 +1602,103 @@ function showToast(message) {
     showToast.timer = setTimeout(() => {
         els.toast.classList.add("hidden");
     }, 3200);
+}
+
+function getMarkdownRenderer() {
+    if (typeof window.markdownit !== "function") {
+        return null;
+    }
+    if (!getMarkdownRenderer.instance) {
+        getMarkdownRenderer.instance = window.markdownit({
+            html: false,
+            linkify: true,
+            typographer: false,
+            breaks: false,
+        });
+    }
+    return getMarkdownRenderer.instance;
+}
+
+function renderMarkdownContent(source) {
+    const text = normalizeMarkdownSource(source);
+    if (!text) {
+        return "";
+    }
+
+    const renderer = getMarkdownRenderer();
+    if (!renderer) {
+        return renderPlainTextHtml(text);
+    }
+
+    const container = document.createElement("div");
+    try {
+        container.innerHTML = renderer.render(text);
+        normalizeRichLinks(container);
+        applyMathRendering(container);
+        if (!container.innerHTML.trim()) {
+            return renderPlainTextHtml(text);
+        }
+        return container.innerHTML;
+    }
+    catch (error) {
+        console.warn("Markdown render fallback", error);
+        return renderPlainTextHtml(text);
+    }
+}
+
+function renderMarkdownList(items) {
+    const cleanItems = (items || []).map((item) => String(item ?? "").trim()).filter(Boolean);
+    if (!cleanItems.length) {
+        return "";
+    }
+
+    if (!getMarkdownRenderer()) {
+        return `<ul>${cleanItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+    }
+
+    const markdown = cleanItems.map((item) => `- ${item}`).join("\n");
+    return renderMarkdownContent(markdown);
+}
+
+function normalizeMarkdownSource(source) {
+    return String(source ?? "")
+        .replaceAll("\r\n", "\n")
+        .trim();
+}
+
+function renderPlainTextHtml(text) {
+    const blocks = normalizeMarkdownSource(text)
+        .split(/\n{2,}/)
+        .map((block) => block.trim())
+        .filter(Boolean);
+    return blocks.map((block) => `<p>${escapeHtml(block).replaceAll("\n", "<br>")}</p>`).join("");
+}
+
+function normalizeRichLinks(container) {
+    for (const link of container.querySelectorAll("a[href]")) {
+        link.target = "_blank";
+        link.rel = "noreferrer noopener";
+    }
+}
+
+function applyMathRendering(container) {
+    if (typeof window.renderMathInElement !== "function" || typeof window.katex === "undefined") {
+        return;
+    }
+
+    window.renderMathInElement(container, {
+        delimiters: RICH_TEXT_MATH_DELIMITERS,
+        ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"],
+        throwOnError: false,
+        strict: "ignore",
+        trust: false,
+    });
+}
+
+function escapeMarkdownText(value) {
+    return String(value ?? "")
+        .replaceAll("\\", "\\\\")
+        .replace(/([*_`~\[\]<>])/g, "\\$1");
 }
 
 function escapeHtml(value) {

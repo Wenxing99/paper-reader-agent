@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request, send_file, url_for
+from flask import Flask, jsonify, make_response, render_template, request, send_file, url_for
 
 from paper_reader_agent.config import load_config
 from paper_reader_agent.services.bridge import request_chat_completion, resolve_bridge_config
@@ -29,14 +30,24 @@ def create_app() -> Flask:
     app.config["PAPER_READER_CONFIG"] = config
     ensure_repo_dirs(config)
 
+    asset_version = max(
+        int((Path(app.static_folder) / "app.js").stat().st_mtime),
+        int((Path(app.static_folder) / "app.css").stat().st_mtime),
+    )
+
     @app.get("/")
-    def index() -> str:
-        return render_template(
-            "index.html",
-            default_bridge_url=config.bridge_url,
-            default_model=config.model,
-            default_reasoning_effort=config.reasoning_effort,
+    def index():
+        response = make_response(
+            render_template(
+                "index.html",
+                default_bridge_url=config.bridge_url,
+                default_model=config.model,
+                default_reasoning_effort=config.reasoning_effort,
+                asset_version=asset_version,
+            )
         )
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
     @app.get("/api/health")
     def health():

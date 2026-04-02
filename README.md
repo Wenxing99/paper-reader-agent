@@ -10,6 +10,8 @@
 
 仓库根目录下的 [AGENTS.md](./AGENTS.md) 是当前项目的最高优先级约束。
 
+Current priorities and staged implementation notes live in [ROADMAP.md](./ROADMAP.md).
+
 ## Current Scope
 
 - Flask 后端 + 原生 JavaScript/CSS 前端
@@ -26,6 +28,7 @@
 - 右侧 chat 默认注入全文导图和相关页面摘录，而不是只盯当前页
 - 为未来 Obsidian 导出预留本地数据结构和目录
 - 内建本地 Codex bridge 启动链，避免依赖额外仓库或中间层
+- Left reading guide and right chat now render Markdown and math.
 
 ## Reading Flow
 

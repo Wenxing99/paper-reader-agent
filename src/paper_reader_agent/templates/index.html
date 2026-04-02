@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>paper-reader-agent</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v=asset_version) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=asset_version) }}">
 </head>
 <body
     data-default-bridge-url="{{ default_bridge_url }}"
@@ -156,6 +157,9 @@
         <div id="toast" class="toast hidden"></div>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="{{ url_for('static', filename='vendor/markdownit/markdown-it.min.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v=asset_version) }}"></script>
 </body>
 </html>
