@@ -354,6 +354,7 @@ When multiple agents are used for one task:
 - use one main/orchestrating agent to define the goal, split the work, integrate results, and decide whether to keep or revert changes;
 - prefer explorer-style read-only agents for codebase inspection, rule lookup, compatibility checks, and problem isolation;
 - prefer worker agents only when the write scope is clear and does not overlap with another worker;
+- when naming subagents, prefer short mathematician/scientist surnames such as `Einstein`, `Newton`, `Euler`, `Gauss`, `Riemann`, or `Cauchy`;
 - define the write scope before spawning workers, and keep worker write sets disjoint whenever possible;
 - avoid parallel writers on high-regression files such as `src/paper_reader_agent/static/app.js` and `src/paper_reader_agent/services/formula_stage.py`;
 - if a change touches prompt behavior, rendering behavior, and application state at the same time, keep the work serial unless the write boundaries are exceptionally clean;

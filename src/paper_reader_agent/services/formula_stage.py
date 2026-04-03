@@ -8,6 +8,9 @@ from typing import Any
 
 from paper_reader_agent.services.bridge import request_chat_completion
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+FORMULA_DEBUG_DIR = REPO_ROOT / ".tmp" / "formula-stage"
+
 MATH_SYMBOLS = set(
     "=<>"
     "\u2264\u2265\u2248\u2260"
@@ -30,6 +33,7 @@ PSEUDO_DISPLAY_MATH_RE = re.compile(r"\[\s*([^\[\]\n]{3,400})\s*\]")
 PSEUDO_INLINE_MATH_RE = re.compile(r"\(([^()\n]{1,120})\)")
 PROTECTED_MATH_RE = re.compile(r"\$\$.*?\$\$|\$[^$\n]+\$", re.DOTALL)
 DISPLAY_DOLLAR_RE = re.compile(r"\$\$\s*(.*?)\s*\$\$", re.DOTALL)
+TAG_RE = re.compile(r"\\tag\{([^}]+)\}")
 
 
 def should_use_formula_stage(selected_text: str) -> bool:
@@ -127,8 +131,51 @@ def request_formula_stage_b(
         temperature=0.2,
     )
     normalized = normalize_stage_b_markdown(answer)
-    normalized = _inject_display_equation_placeholders(normalized, stage_a_result)
-    return _prefer_stage_a_display_equations(normalized, stage_a_result)
+    with_placeholders = _inject_display_equation_placeholders(normalized, stage_a_result)
+    final_answer = _prefer_stage_a_display_equations(with_placeholders, stage_a_result)
+    _write_formula_stage_debug(
+        mode=mode,
+        selected_text=selected_text,
+        stage_a_result=stage_a_result,
+        raw_answer=answer,
+        normalized_answer=normalized,
+        placeholder_answer=with_placeholders,
+        final_answer=final_answer,
+    )
+    return final_answer
+
+
+def _write_formula_stage_debug(
+    *,
+    mode: str,
+    selected_text: str,
+    stage_a_result: dict[str, Any],
+    raw_answer: str,
+    normalized_answer: str,
+    placeholder_answer: str,
+    final_answer: str,
+) -> None:
+    try:
+        FORMULA_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        stage_a_latex = str((stage_a_result or {}).get("latex") or "")
+        payload = {
+            "mode": mode,
+            "selected_text": selected_text,
+            "stage_a_confidence": str((stage_a_result or {}).get("confidence") or ""),
+            "stage_a_warnings": list((stage_a_result or {}).get("warnings") or []),
+            "stage_a_latex": stage_a_latex,
+            "reusable_equations": _select_reusable_display_equations(_extract_stage_a_reusable_equations(stage_a_latex)),
+            "raw_stage_b_answer": raw_answer,
+            "normalized_stage_b_answer": normalized_answer,
+            "placeholder_stage_b_answer": placeholder_answer,
+            "final_stage_b_answer": final_answer,
+        }
+        (FORMULA_DEBUG_DIR / "last-stage-b-debug.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        return
 
 
 def image_path_to_data_url(image_path: Path) -> str:
@@ -182,7 +229,7 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
         if str(item or "").strip()
     ]
     warning_block = "\n".join(f"- {item}" for item in warnings) if warnings else "- none"
-    display_equations = _select_reusable_display_equations(_extract_stage_a_display_equations(latex))
+    display_equations = _select_reusable_display_equations(_extract_stage_a_reusable_equations(latex))
 
     if mode == "translate":
         task_lines = [
@@ -194,12 +241,12 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
             "Keep `_` for subscripts; use `\\_` only for a literal underscore character.",
             "When a star is used as a wildcard or index symbol inside math, prefer `\\ast` over raw `*`.",
             "When using commands like `\\hat`, `\\tilde`, `\\bar`, `\\mathbb`, or `\\mathcal`, wrap the target symbol in braces, for example `\\hat{K}` or `\\mathbb{P}`.",
-            "When you show a displayed equation, copy it directly from `Recovered LaTeX transcription` instead of rewriting its LaTeX.",
+            "When you show a standalone formula or displayed equation that already appears in `Recovered LaTeX transcription`, copy it directly instead of rewriting its LaTeX.",
             "Do not alter backslashes, braces, subscripts, superscripts, or delimiter commands inside copied equations unless absolutely necessary.",
             "Do not leave bare LaTeX commands in prose.",
             "Never use plain parentheses like `(L)` or square brackets like `[ ... ]` as math delimiters; use `$...$` or `$$...$$` instead.",
             "Long formulas should be placed on their own lines instead of being embedded in a paragraph.",
-            "Do not write long display equations from scratch. If you need to reference a recovered displayed equation, use its placeholder token exactly, such as `{{DISPLAY_EQ_1}}`, on its own line.",
+            "Do not write standalone formulas or long display equations from scratch when a recovered version already exists. If you need to reference a recovered standalone/display equation, use its placeholder token exactly, such as `{{DISPLAY_EQ_1}}`, on its own line.",
             "Do not mention the crop image, recognition process, internal stages, or system drafts.",
             "Only mention uncertainty if `Recognition warnings` materially changes the meaning.",
             "After the translation, add one short sentence describing the role of this passage in the paper.",
@@ -214,12 +261,12 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
             "Keep `_` for subscripts; use `\\_` only for a literal underscore character.",
             "When a star is used as a wildcard or index symbol inside math, prefer `\\ast` over raw `*`.",
             "When using commands like `\\hat`, `\\tilde`, `\\bar`, `\\mathbb`, or `\\mathcal`, wrap the target symbol in braces, for example `\\hat{K}` or `\\mathbb{P}`.",
-            "When you show a displayed equation, copy it directly from `Recovered LaTeX transcription` instead of rewriting its LaTeX.",
+            "When you show a standalone formula or displayed equation that already appears in `Recovered LaTeX transcription`, copy it directly instead of rewriting its LaTeX.",
             "Do not alter backslashes, braces, subscripts, superscripts, or delimiter commands inside copied equations unless absolutely necessary.",
             "Do not leave bare LaTeX commands in prose.",
             "Never use plain parentheses like `(L)` or square brackets like `[ ... ]` as math delimiters; use `$...$` or `$$...$$` instead.",
             "Long formulas should be placed on their own lines instead of being embedded in a paragraph.",
-            "Do not write long display equations from scratch. If you need to reference a recovered displayed equation, use its placeholder token exactly, such as `{{DISPLAY_EQ_1}}`, on its own line.",
+            "Do not write standalone formulas or long display equations from scratch when a recovered version already exists. If you need to reference a recovered standalone/display equation, use its placeholder token exactly, such as `{{DISPLAY_EQ_1}}`, on its own line.",
             "Do not mention the crop image, recognition process, internal stages, or system drafts.",
             "Only mention uncertainty if `Recognition warnings` materially changes the interpretation.",
             "Use these exact Chinese section headings:",
@@ -610,7 +657,7 @@ def _normalize_confidence(text: str) -> str:
 def _inject_display_equation_placeholders(text: str, stage_a_result: dict[str, Any]) -> str:
     value = str(text or "")
     display_equations = _select_reusable_display_equations(
-        _extract_stage_a_display_equations(str((stage_a_result or {}).get("latex") or ""))
+        _extract_stage_a_reusable_equations(str((stage_a_result or {}).get("latex") or ""))
     )
     if not display_equations:
         return value
@@ -625,17 +672,41 @@ def _prefer_stage_a_display_equations(text: str, stage_a_result: dict[str, Any])
     if not stage_a_latex:
         return text
 
-    preferred_blocks = _select_reusable_display_equations(_extract_stage_a_display_equations(stage_a_latex))
+    preferred_blocks = _select_reusable_display_equations(_extract_stage_a_reusable_equations(stage_a_latex))
     if not preferred_blocks:
         return text
 
     matches = list(DISPLAY_DOLLAR_RE.finditer(text))
     if not matches:
         return text
+
+    tagged_preferred = {
+        tag: block
+        for block in preferred_blocks
+        if (tag := _extract_equation_tag(block))
+    }
+    if tagged_preferred:
+        parts: list[str] = []
+        cursor = 0
+        replaced_any = False
+        for match in matches:
+            parts.append(text[cursor:match.start()])
+            candidate = match.group(1).strip()
+            tag = _extract_equation_tag(candidate)
+            if tag and tag in tagged_preferred:
+                parts.append(_display_math_block(tagged_preferred[tag]))
+                replaced_any = True
+            else:
+                parts.append(match.group(0))
+            cursor = match.end()
+        parts.append(text[cursor:])
+        if replaced_any:
+            return "".join(parts)
+
     if len(matches) != len(preferred_blocks):
         return text
 
-    parts: list[str] = []
+    parts = []
     cursor = 0
     for index, match in enumerate(matches):
         parts.append(text[cursor:match.start()])
@@ -664,12 +735,33 @@ def _extract_stage_a_display_equations(text: str) -> list[str]:
     return blocks
 
 
+def _extract_stage_a_reusable_equations(text: str) -> list[str]:
+    value = str(text or "")
+    blocks = _extract_stage_a_display_equations(value)
+    outside = DISPLAY_LATEX_RE.sub("", value)
+    outside = DISPLAY_DOLLAR_RE.sub("", outside)
+
+    for line in outside.splitlines():
+        candidate = line.strip()
+        if candidate and _looks_like_standalone_math_line(candidate) and candidate not in blocks:
+            blocks.append(candidate)
+
+    return blocks
+
+
 def _select_reusable_display_equations(blocks: list[str]) -> list[str]:
     selected: list[str] = []
     for block in blocks:
         if _looks_like_complex_display_equation(block):
             selected.append(block)
     return selected
+
+
+def _extract_equation_tag(text: str) -> str | None:
+    match = TAG_RE.search(str(text or ""))
+    if not match:
+        return None
+    return match.group(1).strip() or None
 
 
 def _looks_like_complex_display_equation(text: str) -> bool:

@@ -22,6 +22,20 @@ Practical default:
 
 ## Preferred Agent Roles
 
+## Naming Convention
+
+When this repo uses multiple agents, prefer short mathematician or scientist surnames for human-readable agent names.
+
+Examples:
+- `Einstein`
+- `Newton`
+- `Euler`
+- `Gauss`
+- `Riemann`
+- `Cauchy`
+
+This is only a naming convention; task boundaries and write-scope rules still matter more than the names.
+
 ### 1. Main Agent
 
 Responsibilities:

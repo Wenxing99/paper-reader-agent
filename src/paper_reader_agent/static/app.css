@@ -338,6 +338,7 @@ button {
     background: var(--surface-strong);
 }
 
+
 .guide-intro strong,
 .guide-group h3 {
     display: block;
@@ -611,6 +612,7 @@ button {
 .chat-rich-text {
     min-width: 0;
 }
+
 
 .compact-reader-head {
     justify-content: flex-end;

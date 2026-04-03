@@ -41,16 +41,18 @@ Next tasks:
 Goal: keep improving the center PDF reader, but only through smaller independent releases.
 
 Near-term tasks:
-- First small step: raise the zoom ceiling to at least `300%`.
-- If stable, consider a separate follow-up step for `400%`.
+- Completed: the zoom ceiling has been raised to `400%` as the first safe reader ergonomics step.
+- Follow-up work should stay separate: do not bundle new zoom controls or keyboard behavior into the same iteration.
 - Put `Actual Size` and `Fit Height` into their own later iteration.
 - Put keyboard shortcuts, zoom anchoring, and scroll-position preservation into separate later iterations.
+- Right-column layout polish should stay a separate task from reader controls: widen the chat-column ceiling and reduce full-panel horizontal scrolling without reopening the PDF reader state machine.
 - Each step must be independently shippable and reversible.
 
 Design notes:
 - Keep the paper-first layout.
 - Do not make the reader header tall again just to add more controls.
 - Any reader improvement must preserve continuous reading, independent scrolling, and import stability first.
+- For the right chat column, prefer local overflow on genuinely long formula blocks over horizontal scrolling for the entire chat panel.
 
 ### P3. Stage A + Stage B Formula Selection Pilot
 

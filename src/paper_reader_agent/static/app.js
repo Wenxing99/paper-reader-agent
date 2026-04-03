@@ -2141,7 +2141,7 @@ function clampZoomScale(value) {
     if (!Number.isFinite(value)) {
         return 1;
     }
-    return Math.min(2.6, Math.max(0.55, value));
+    return Math.min(4.0, Math.max(0.55, value));
 }
 
 function clampNumber(value, minimum, maximum) {
@@ -2273,6 +2273,8 @@ function restoreProtectedDisplayMath(container, blocks) {
 
     let html = container.innerHTML;
     for (const block of blocks) {
+        const wrappedTokenPattern = new RegExp(`<p>\s*${block.token}\s*</p>`, "g");
+        html = html.replace(wrappedTokenPattern, () => block.math);
         html = html.replaceAll(block.token, block.math);
     }
     container.innerHTML = html;

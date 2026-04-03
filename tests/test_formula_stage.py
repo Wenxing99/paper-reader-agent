@@ -57,7 +57,7 @@ class FormulaStageTests(unittest.TestCase):
         self.assertIn("Use these exact Chinese section headings:", prompt)
         self.assertIn("1. 一句话总结", prompt)
         self.assertIn("2. 这个公式 / 定理在说什么", prompt)
-        self.assertIn("copy it directly from `Recovered LaTeX transcription`", prompt)
+        self.assertIn("copy it directly instead of rewriting its LaTeX", prompt)
         self.assertIn("Do not alter backslashes, braces, subscripts, superscripts", prompt)
         self.assertIn("Do not leave bare LaTeX commands in prose.", prompt)
         self.assertIn("Never use plain parentheses like `(L)` or square brackets like `[ ... ]`", prompt)
@@ -66,7 +66,7 @@ class FormulaStageTests(unittest.TestCase):
         self.assertIn("wrap the target symbol in braces", prompt)
         self.assertIn("Recovered display equations:", prompt)
         self.assertIn("{{DISPLAY_EQ_1}}", prompt)
-        self.assertIn("Do not write long display equations from scratch", prompt)
+        self.assertIn("Do not write standalone formulas or long display equations from scratch", prompt)
 
     def test_build_formula_stage_b_prompt_includes_short_tagged_display_equation_placeholder(self) -> None:
         prompt = build_formula_stage_b_prompt(
@@ -83,6 +83,21 @@ class FormulaStageTests(unittest.TestCase):
         self.assertIn(r"\arg\min", prompt)
         self.assertIn(r"\tag{11}", prompt)
 
+
+    def test_build_formula_stage_b_prompt_includes_standalone_formula_placeholder(self) -> None:
+        prompt = build_formula_stage_b_prompt(
+            selected_text="noisy text",
+            mode="explain",
+            stage_a_result={
+                "latex": r"\hat{u}(\lambda)=\arg\min_{u \in \mathbb{R}^n} H\bigl(u,\{Y_i\}_{i=1}^n,\lambda\bigr). \tag{11}",
+                "confidence": "high",
+                "warnings": [],
+            },
+        )
+        self.assertIn("Recovered display equations:", prompt)
+        self.assertIn("{{DISPLAY_EQ_1}}", prompt)
+        self.assertIn(r"\arg\min", prompt)
+        self.assertIn(r"\tag{11}", prompt)
     def test_normalize_stage_b_markdown_converts_inline_delimiters(self) -> None:
         result = normalize_stage_b_markdown(r"The key object is \(\Pi^\infty\) and the rate is \(L^{-1/2}\).")
         self.assertEqual(result, r"The key object is $\Pi^\infty$ and the rate is $L^{-1/2}$.")
@@ -181,6 +196,69 @@ class FormulaStageTests(unittest.TestCase):
         self.assertNotIn(r"\right\rVert\mathrm{op})", result)
 
 
+    def test_request_formula_stage_b_prefers_stage_a_standalone_formula(self) -> None:
+        with mock.patch.object(
+            formula_stage,
+            "request_chat_completion",
+            return_value=(
+                "Optimization problem:\n"
+                "$$\n"
+                r"\hat{u}(\lambda)=\arg\min_{u \in \mathbb{R}^n} H\bigl(u,\{Y_i\}_{i=1}^n,\lambda\bigr). \tag{11}"
+                "\n$$"
+            ),
+        ):
+            result = request_formula_stage_b(
+                {"api_url": "http://127.0.0.1:8765/v1", "model": "gpt-5.4", "api_key": "", "reasoning_effort": ""},
+                selected_text="noisy text",
+                context_text="paper context",
+                mode="explain",
+                stage_a_result={
+                    "latex": (
+                        "Theorem 3 defines the estimate as:\n"
+                        r"\hat{u}(\lambda)=\arg\min_{u \in \mathbb{R}^n} H\bigl(u,\{Y_i\}_{i=1}^n,\lambda\bigr). \tag{11}"
+                    ),
+                    "confidence": "high",
+                    "warnings": [],
+                },
+            )
+
+        self.assertIn("$$\n\\hat{u}(\\lambda)=\\arg\\min", result)
+        self.assertIn(r"\tag{11}", result)
+
+
+    def test_request_formula_stage_b_prefers_tagged_stage_a_formula_even_when_display_counts_differ(self) -> None:
+        with mock.patch.object(
+            formula_stage,
+            "request_chat_completion",
+            return_value=(
+                "Optimization problem:\n"
+                "$$\n"
+                r"\hat{u}(\lambda)=\arg\min_{u \in \mathbb{R}^n} H\bigl(u,\{Y_i\}_{i=1}^n,\lambda\bigr) \tag{11}"
+                "\n$$\n"
+                "Probability bound:\n"
+                "$$\n"
+                r"\mathbb{P}[\hat{K}(\lambda)=K] \ge 1-e n^{3-c}"
+                "\n$$"
+            ),
+        ):
+            result = request_formula_stage_b(
+                {"api_url": "http://127.0.0.1:8765/v1", "model": "gpt-5.4", "api_key": "", "reasoning_effort": ""},
+                selected_text="noisy text",
+                context_text="paper context",
+                mode="explain",
+                stage_a_result={
+                    "latex": (
+                        "Theorem 3 defines the estimate as:\n"
+                        r"\hat{u}(\lambda)=\arg\min_{u \in \mathbb{R}^n} H\bigl(u,\{Y_i\}_{i=1}^n,\lambda\bigr). \tag{11}"
+                    ),
+                    "confidence": "high",
+                    "warnings": [],
+                },
+            )
+
+        self.assertIn("$$\n\\hat{u}(\\lambda)=\\arg\\min", result)
+        self.assertIn(r"\tag{11}", result)
+        self.assertIn(r"\mathbb{P}[\hat{K}(\lambda)=K]", result)
     def test_request_formula_stage_b_normalizes_output_once_locally(self) -> None:
         with mock.patch.object(
             formula_stage,
@@ -243,3 +321,5 @@ class FormulaStageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
