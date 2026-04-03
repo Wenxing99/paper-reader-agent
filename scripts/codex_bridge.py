@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
@@ -101,16 +103,16 @@ def normalize_reasoning_effort(raw_effort: Any, *, allow_disable: bool) -> str |
     return effort
 
 
-def flatten_message_content(content: Any) -> tuple[str, bool]:
+def flatten_message_content(content: Any) -> tuple[str, list[dict[str, Any]]]:
     if content is None:
-        return "", False
+        return "", []
     if isinstance(content, str):
-        return content, False
+        return content, []
     if not isinstance(content, list):
-        return str(content), False
+        return str(content), []
 
     text_parts: list[str] = []
-    saw_image = False
+    image_parts: list[dict[str, Any]] = []
 
     for part in content:
         if isinstance(part, str):
@@ -125,7 +127,7 @@ def flatten_message_content(content: Any) -> tuple[str, bool]:
             text_parts.append(str(part.get("text") or ""))
             continue
         if part_type in {"image_url", "input_image", "image"}:
-            saw_image = True
+            image_parts.append(part)
             continue
 
         if "text" in part:
@@ -133,10 +135,91 @@ def flatten_message_content(content: Any) -> tuple[str, bool]:
         else:
             text_parts.append(json.dumps(part, ensure_ascii=False))
 
-    return "".join(text_parts), saw_image
+    return "".join(text_parts), image_parts
 
 
-def build_prompt(messages: list[dict[str, Any]]) -> str:
+def materialize_image_parts(image_parts: list[dict[str, Any]], *, workdir: Path) -> list[str]:
+    image_paths: list[str] = []
+    if not image_parts:
+        return image_paths
+
+    image_dir = workdir / ".bridge-images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    for part in image_parts:
+        image_url = part.get("image_url")
+        raw_url = ""
+        if isinstance(image_url, dict):
+            raw_url = str(image_url.get("url") or "").strip()
+        elif image_url:
+            raw_url = str(image_url).strip()
+        elif part.get("url"):
+            raw_url = str(part.get("url") or "").strip()
+
+        if not raw_url:
+            raise BridgeError(
+                "Image input is missing a usable URL.",
+                code="invalid_image_input",
+                status=400,
+            )
+
+        if raw_url.startswith("data:image/") and ";base64," in raw_url:
+            image_paths.append(_materialize_data_url_image(raw_url, image_dir=image_dir))
+            continue
+
+        possible_path = Path(raw_url)
+        if possible_path.exists():
+            image_paths.append(str(possible_path))
+            continue
+
+        if raw_url.startswith("file://"):
+            file_path = Path(raw_url[7:])
+            if file_path.exists():
+                image_paths.append(str(file_path))
+                continue
+
+        raise BridgeError(
+            "This local Codex bridge currently supports image inputs via data URLs or local file paths only.",
+            code="unsupported_multimodal",
+            status=400,
+        )
+
+    return image_paths
+
+
+def _materialize_data_url_image(raw_url: str, *, image_dir: Path) -> str:
+    header, encoded = raw_url.split(",", 1)
+    mime = header[5:].split(";", 1)[0].strip().lower()
+    suffix = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }.get(mime)
+    if not suffix:
+        raise BridgeError(
+            f"Unsupported image MIME type `{mime}` for the local Codex bridge.",
+            code="unsupported_image_type",
+            status=400,
+        )
+
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise BridgeError(
+            "Image input is not valid base64 data.",
+            code="invalid_image_input",
+            status=400,
+        ) from exc
+
+    digest = hashlib.sha1(payload).hexdigest()
+    image_path = image_dir / f"{digest}{suffix}"
+    if not image_path.exists():
+        image_path.write_bytes(payload)
+    return str(image_path)
+
+
+def build_prompt(messages: list[dict[str, Any]], *, workdir: Path) -> tuple[str, list[str]]:
     prompt_parts = [
         "You are the assistant behind a local OpenAI-compatible bridge for paper-reader-agent.",
         "Return only the assistant reply for the conversation below.",
@@ -145,20 +228,29 @@ def build_prompt(messages: list[dict[str, Any]]) -> str:
         "",
         "Conversation:",
     ]
+    image_paths: list[str] = []
 
-    for message in messages:
+    for index, message in enumerate(messages):
         role = str(message.get("role") or "user").strip().lower() or "user"
-        content, saw_image = flatten_message_content(message.get("content"))
-        if saw_image:
-            raise BridgeError(
-                "This local Codex bridge currently supports text-only requests.",
-                code="unsupported_multimodal",
-                status=400,
-            )
+        content, image_parts = flatten_message_content(message.get("content"))
+        if image_parts:
+            if image_paths:
+                raise BridgeError(
+                    "This local Codex bridge currently supports images in one message only.",
+                    code="unsupported_multimodal",
+                    status=400,
+                )
+            if index != 0:
+                raise BridgeError(
+                    "This local Codex bridge only supports attaching images to the first message.",
+                    code="unsupported_multimodal",
+                    status=400,
+                )
+            image_paths = materialize_image_parts(image_parts, workdir=workdir)
         prompt_parts.append(f"<{role}>\n{content}\n</{role}>")
 
     prompt_parts.append("<assistant>")
-    return "\n\n".join(prompt_parts)
+    return "\n\n".join(prompt_parts), image_paths
 
 
 def build_codex_commands(
@@ -168,6 +260,7 @@ def build_codex_commands(
     reasoning_effort: str | None,
     sandbox_mode: str,
     extra_args: list[str],
+    image_paths: list[str],
 ) -> list[list[str]]:
     base = [
         *command_prefix,
@@ -178,6 +271,8 @@ def build_codex_commands(
     ]
     if reasoning_effort:
         base.extend(["-c", f"model_reasoning_effort={reasoning_effort}"])
+    for image_path in image_paths:
+        base.extend(["--image", image_path])
     base.extend([*extra_args, "-m", model])
     return [
         [*base, "--output-last-message", "-"],
@@ -218,6 +313,7 @@ def run_codex(
     *,
     model: str,
     requested_reasoning_effort: str | None,
+    image_paths: list[str],
     state: "BridgeState",
 ) -> str:
     errors: list[str] = []
@@ -238,6 +334,7 @@ def run_codex(
             reasoning_effort=reasoning_effort or None,
             sandbox_mode=state.sandbox_mode,
             extra_args=state.extra_args,
+            image_paths=image_paths,
         )
     ):
         try:
@@ -454,11 +551,12 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
 
             model = str(payload.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
             requested_reasoning_effort = extract_requested_reasoning(payload)
-            prompt = build_prompt(messages)
+            prompt, image_paths = build_prompt(messages, workdir=self.state.workdir)
             response_text = run_codex(
                 prompt,
                 model=model,
                 requested_reasoning_effort=requested_reasoning_effort,
+                image_paths=image_paths,
                 state=self.state,
             )
             request_id = f"chatcmpl-{uuid.uuid4().hex}"

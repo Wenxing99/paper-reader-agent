@@ -57,21 +57,26 @@ Design notes:
 Goal: prepare the first real implementation slice of the mixed-selection formula pipeline.
 
 Current baseline:
-- Selection rectangle capture and crop-debug preview are now wired into the existing selection-action flow.
-- The current slice is still debug-first: it validates region capture and crop fidelity before OCR is introduced.
+- Selection rectangle capture and internal crop handoff are wired into the existing selection-action flow.
+- Math-heavy selections can now route through Stage A (vision-capable LaTeX recovery) and Stage B (paper-aware final explanation or translation).
+- Normal prose selections still stay on the lighter text-only path.
+- Intermediate crop and draft artifacts are no longer part of the default user-facing UI.
 - The last local-OCR experiment was rejected because the latency and local model-loading cost were not acceptable for the product direction.
 
 Near-term tasks:
-- Start with selection-rectangle capture and cropped-image debugging output.
-- Keep the OCR backend replaceable from day one.
-- Avoid committing to a heavyweight OCR dependency before the crop/debug path is proven.
-- Feed Stage A output into Stage B only after the crop and OCR draft are inspectable.
+- Harden the Stage A -> Stage B output contract and fallback behavior.
+- Make the image-capable bridge route more robust before adding more UI.
+- Keep Stage B on a single model pass that returns Markdown with KaTeX-friendly delimiters.
+- Preserve the current selective routing: math-heavy selections may escalate, normal prose should not.
+- Decide later whether internal debug output needs a developer-only toggle rather than a default surface.
 
 Design notes:
 - Treat mixed selections such as body text + theorem statement + complex formula as the target case.
 - Stage A + Stage B is an enhanced path for complex math-heavy selections, not the default path for every selection.
 - Normal prose selections should continue to use the lighter text-only path unless there is a clear reason to escalate.
 - Stage A and Stage B should remain separable for debugging and caching.
+- Stage B should return Markdown with KaTeX-friendly inline and display math delimiters.
+- Keep any local formatting repair deterministic and minimal; do not add a second model repair pass by default.
 - Keep the path MIT-compatible by default.
 
 ## Recommended Execution Order
@@ -109,9 +114,9 @@ Current cautions:
 - Any future vision-model route must still stay aligned with the repo's MIT-first shipped surface and local-first architecture.
 
 Roadmap implication:
-- If formula selection continues to be a core pain point after the current Markdown/math rendering improvements, the Stage A + Stage B path should be treated as a future high-value track.
-- The next implementation should keep the crop/debug output visible for trust and use it as the handoff into a vision-capable Stage A.
-- Stage B should be designed as a paper-aware interpretation layer rather than a generic post-processing step.
+- Formula-heavy selection is now an active high-value track rather than a purely future idea.
+- The next iterations should keep Stage A as an internal handoff layer and keep Stage B as the user-visible result.
+- Stage B should remain a paper-aware interpretation layer rather than a generic post-processing step.
 
 ## Open Questions
 

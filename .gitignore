@@ -1,5 +1,6 @@
 .venv/
 .tmp/
+.tmp-tests/
 scripts/.codex-bridge-workdir/
 scripts/codex_bridge.local.cmd
 src/paper_reader_agent/static/vendor/pdfjs/build/*.map

@@ -31,6 +31,15 @@ Current priorities and staged implementation notes live in [ROADMAP.md](./ROADMA
 - 内建本地 Codex bridge 启动链，避免依赖额外仓库或中间层
 - Left reading guide and right chat now render Markdown and math.
 
+## Formula-Heavy Selection Pilot
+
+- Math-heavy selections now use an internal `Stage A -> Stage B` path: Stage A recovers a best-effort LaTeX transcription from the current selection crop, then Stage B uses that transcription plus paper context to generate the final explanation or translation.
+- This is an enhanced path, not the default path for every selection. Normal prose selections still use the lighter text-only flow.
+- The current Stage A route depends on an image-capable local bridge/model path.
+- Stage B is expected to return Markdown with KaTeX-friendly math delimiters so the right panel can render formulas directly.
+- The current shipped normalization pass is intentionally small and local: it only cleans obvious math delimiters such as \\(...\\), \\[...\\], or fenced latex blocks instead of doing a second model repair round.
+- Intermediate crop/draft artifacts are now treated as internal implementation details rather than default user-facing UI.
+
 ## Reading Flow
 
 - 导入 PDF 时会优先完成文件保存和基础元数据读取，不再默认阻塞到整篇文本缓存完成

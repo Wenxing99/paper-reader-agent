@@ -29,9 +29,11 @@ def normalize_reasoning_effort(value: Any) -> str:
 def request_chat_completion(
     bridge: dict[str, str],
     *,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     max_tokens: int,
     temperature: float,
+    timeout_sec: int = 240,
+    extra_payload: dict[str, Any] | None = None,
 ) -> str:
     endpoint = _normalize_chat_url(bridge["api_url"])
     headers = {"Content-Type": "application/json"}
@@ -46,12 +48,14 @@ def request_chat_completion(
     }
     if bridge.get("reasoning_effort"):
         request_body["reasoning_effort"] = bridge["reasoning_effort"]
+    if extra_payload:
+        request_body.update(extra_payload)
 
     body = json.dumps(request_body).encode("utf-8")
 
     request_obj = urlrequest.Request(endpoint, data=body, headers=headers, method="POST")
     try:
-        with urlrequest.urlopen(request_obj, timeout=240) as response:
+        with urlrequest.urlopen(request_obj, timeout=timeout_sec) as response:
             raw = response.read().decode("utf-8", errors="replace")
     except urlerror.HTTPError as error:
         raw = error.read().decode("utf-8", errors="replace")

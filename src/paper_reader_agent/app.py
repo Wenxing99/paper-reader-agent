@@ -8,6 +8,12 @@ from flask import Flask, jsonify, make_response, render_template, request, send_
 from paper_reader_agent.config import load_config
 from paper_reader_agent.services.bridge import request_chat_completion, resolve_bridge_config
 from paper_reader_agent.services.context import build_chat_context, build_selection_context
+from paper_reader_agent.services.formula_stage import (
+    has_formula_stage_a_content,
+    request_formula_stage_a,
+    request_formula_stage_b,
+    should_use_formula_stage,
+)
 from paper_reader_agent.services.guide_jobs import get_reading_guide_status, queue_reading_guide_generation
 from paper_reader_agent.services.library import get_paper, import_uploaded_pdf, list_papers, scan_library
 from paper_reader_agent.services.selection_regions import build_selection_debug_crop
@@ -246,53 +252,51 @@ def create_app() -> Flask:
         except Exception as error:
             return _error(str(error), 400)
 
-        debug_crop = None
-        debug_crop_error = ""
-        if page_payload and isinstance(selection_region, dict):
-            try:
-                debug_crop = build_selection_debug_crop(config, record, page_payload, selection_region)
-                debug_crop["image_url"] = url_for(
-                    "selection_debug_crop_image",
-                    paper_id=paper_id,
-                    crop_id=debug_crop["crop_id"],
-                )
-            except Exception as error:
-                debug_crop_error = str(error)
-
+        use_formula_stage = bool(
+            page_payload
+            and isinstance(selection_region, dict)
+            and should_use_formula_stage(selected_text)
+        )
         context_text = build_selection_context(
             config,
             paper_title=record.title,
             reading_guide=guide,
             page_payload=page_payload,
         )
-        prompt = _selection_prompt(selected_text, mode)
 
-        try:
-            answer = request_chat_completion(
-                bridge,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an academic reading assistant. Respond in Simplified Chinese. "
-                            "Use the paper context to ground the explanation or translation."
-                        ),
-                    },
-                    {
-                        "role": "system",
-                        "content": f"论文上下文：\n{context_text}",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    },
-                ],
-                max_tokens=1000,
-                temperature=0.2,
-            )
-        except Exception as error:
-            return _error(f"选中文本处理失败: {error}", 500)
-        return jsonify({"text": answer, "debug_crop": debug_crop, "debug_crop_error": debug_crop_error})
+        answer = ""
+        if use_formula_stage:
+            try:
+                debug_crop = build_selection_debug_crop(config, record, page_payload, selection_region)
+                crop_path = selection_debug_image_path(config, record.id, debug_crop["crop_id"])
+                formula_stage_a = request_formula_stage_a(
+                    bridge,
+                    image_path=crop_path,
+                    selected_text=selected_text,
+                )
+                if has_formula_stage_a_content(formula_stage_a):
+                    answer = request_formula_stage_b(
+                        bridge,
+                        selected_text=selected_text,
+                        context_text=context_text,
+                        mode=mode,
+                        stage_a_result=formula_stage_a,
+                    )
+            except Exception:
+                answer = ""
+
+        if not answer:
+            try:
+                answer = _request_selection_text_answer(
+                    bridge=bridge,
+                    context_text=context_text,
+                    selected_text=selected_text,
+                    mode=mode,
+                )
+            except Exception as error:
+                return _error(f"Selection action failed: {error}", 500)
+
+        return jsonify({"text": answer})
 
     return app
 
@@ -323,6 +327,32 @@ def _last_user_message(messages: list[dict[str, Any]]) -> str:
             return str(item.get("content") or "").strip()
     return ""
 
+
+
+def _request_selection_text_answer(*, bridge: dict[str, str], context_text: str, selected_text: str, mode: str) -> str:
+    prompt = _selection_prompt(selected_text, mode)
+    return request_chat_completion(
+        bridge,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an academic reading assistant. Respond in Simplified Chinese. "
+                    "Use the paper context to ground the explanation or translation."
+                ),
+            },
+            {
+                "role": "system",
+                "content": f"Paper context:\n{context_text}",
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        max_tokens=1000,
+        temperature=0.2,
+    )
 
 def _selection_prompt(text: str, mode: str) -> str:
     if mode == "translate":

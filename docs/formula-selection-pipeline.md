@@ -44,6 +44,19 @@ That is not reliable for math because:
 - the current text layer groups content by visual lines, which is acceptable for prose but lossy for formulas;
 - superscripts, subscripts, matrices, aligned equations, and unusual operators may be damaged before the model ever sees them.
 
+## Current Implementation Status
+
+Shipped today:
+- selection rectangle capture and internal crop generation are working;
+- math-heavy selections can now route through Stage A and Stage B in the existing selection-action flow;
+- the current Stage A prompt aims for a full-crop LaTeX transcription rather than a short "main math only" summary;
+- the current Stage A route goes through the local bridge path with image input rather than a bundled local OCR backend;
+- normal prose selections still use the lighter text-only path;
+- the default UI now shows the final Stage B explanation or translation instead of exposing the intermediate Stage A draft;
+- Stage B is now expected to emit Markdown with KaTeX-friendly math delimiters so formulas can render directly in the right panel.
+
+This means the repository now has the first real end-to-end Stage A + Stage B slice, even though the output contract and fallback behavior still need refinement.
+
 ## Proposed Architecture
 
 ### Stage A
@@ -82,9 +95,12 @@ Expected Stage B behavior:
 - acknowledge when OCR is uncertain;
 - explain the formula structure itself;
 - explain how it relates to the theorem / paragraph / argument nearby;
+- return Markdown whose formulas are wrapped in KaTeX-friendly delimiters;
+- avoid leaving bare LaTeX commands floating in prose;
 - avoid pretending damaged symbols were recovered perfectly when they were not.
 
 Stage B should be implemented as a paper-aware interpretation layer, not as generic post-processing.
+A tiny local normalization layer is acceptable for obvious delimiter cleanup, but the default path should not add a second model repair pass.
 
 ## Minimal Implementation Plan
 
@@ -123,13 +139,15 @@ Goal:
 Deliverables:
 - a replaceable OCR adapter interface;
 - one working backend integration;
-- visible intermediate OCR output for debugging and trust.
+- stable internal handoff from Stage A output into Stage B.
 
-Recommended next backend direction:
-- a vision-capable model route that receives the cropped selection image and returns best-effort LaTeX.
+Current backend direction:
+- keep the shipped vision-capable model route that receives the cropped selection image and returns a best-effort full-crop LaTeX draft;
+- keep the Stage A backend replaceable in case the bridge or model changes later.
 
 Reason:
 - the crop-debug foundation already works;
+- the current image-capable bridge path is much lighter than bundling a local OCR stack;
 - a local OCR backend was tested and rejected because the latency and local model-loading cost were not acceptable for the intended product experience.
 
 ### Step 4: Stage B Explanation Path
@@ -139,8 +157,8 @@ Goal:
 
 Deliverables:
 - separate prompt / orchestration path for formula-heavy explanation;
-- response includes both recovered formula and explanation;
-- uncertainty from Stage A is surfaced, not hidden.
+- final user-facing response comes from Stage B rather than the raw Stage A draft;
+- uncertainty from Stage A is used internally and mentioned only when it materially affects interpretation.
 
 ### Step 5: Routing and Fallbacks
 
