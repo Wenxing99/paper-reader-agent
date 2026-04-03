@@ -45,6 +45,7 @@ Near-term tasks:
 - Follow-up work should stay separate: do not bundle new zoom controls or keyboard behavior into the same iteration.
 - Put `Actual Size` and `Fit Height` into their own later iteration.
 - Put keyboard shortcuts, zoom anchoring, and scroll-position preservation into separate later iterations.
+- Restore clickable PDF link annotations and internal citation/reference jumps; the current reader can show linked text styling but still cannot follow those links into the reference section or other in-paper destinations.
 - Right-column layout polish should stay a separate task from reader controls: widen the chat-column ceiling and reduce full-panel horizontal scrolling without reopening the PDF reader state machine.
 - Each step must be independently shippable and reversible.
 

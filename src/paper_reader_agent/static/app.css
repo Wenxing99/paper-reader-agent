@@ -339,6 +339,19 @@ button {
 }
 
 
+.chat-card {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.chat-rich-text,
+.chat-rich-text p,
+.chat-rich-text li,
+.chat-rich-text blockquote {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
 .guide-intro strong,
 .guide-group h3 {
     display: block;

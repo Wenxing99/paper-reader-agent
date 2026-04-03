@@ -242,6 +242,7 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
             "When a star is used as a wildcard or index symbol inside math, prefer `\\ast` over raw `*`.",
             "When using commands like `\\hat`, `\\tilde`, `\\bar`, `\\mathbb`, or `\\mathcal`, wrap the target symbol in braces, for example `\\hat{K}` or `\\mathbb{P}`.",
             "When you show a standalone formula or displayed equation that already appears in `Recovered LaTeX transcription`, copy it directly instead of rewriting its LaTeX.",
+            "Prefer exact symbol and sequence notation copied from `Recovered LaTeX transcription`; do not invent new shorthand for indexed families unless copied exactly.",
             "Do not alter backslashes, braces, subscripts, superscripts, or delimiter commands inside copied equations unless absolutely necessary.",
             "Do not leave bare LaTeX commands in prose.",
             "Never use plain parentheses like `(L)` or square brackets like `[ ... ]` as math delimiters; use `$...$` or `$$...$$` instead.",
@@ -262,6 +263,7 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
             "When a star is used as a wildcard or index symbol inside math, prefer `\\ast` over raw `*`.",
             "When using commands like `\\hat`, `\\tilde`, `\\bar`, `\\mathbb`, or `\\mathcal`, wrap the target symbol in braces, for example `\\hat{K}` or `\\mathbb{P}`.",
             "When you show a standalone formula or displayed equation that already appears in `Recovered LaTeX transcription`, copy it directly instead of rewriting its LaTeX.",
+            "Prefer exact symbol and sequence notation copied from `Recovered LaTeX transcription`; do not invent new shorthand for indexed families unless copied exactly.",
             "Do not alter backslashes, braces, subscripts, superscripts, or delimiter commands inside copied equations unless absolutely necessary.",
             "Do not leave bare LaTeX commands in prose.",
             "Never use plain parentheses like `(L)` or square brackets like `[ ... ]` as math delimiters; use `$...$` or `$$...$$` instead.",
@@ -506,6 +508,7 @@ def _normalize_markdown_sensitive_math_tokens(text: str) -> str:
 
 def _normalize_math_token_content(text: str) -> str:
     value = text
+    value = re.sub(r'(?<=,)\s*\\dot\s*\{?\s*s\s*\}?\s*(?=,)', r'\\ldots', value)
     value = re.sub(r'(?<=,)\*', lambda _: r'\ast', value)
     value = re.sub(r'(?<=\{)\*(?=\})', lambda _: r'\ast', value)
     value = re.sub(r'(?<=_)\*(?=[^A-Za-z]|$)', lambda _: r'\ast', value)

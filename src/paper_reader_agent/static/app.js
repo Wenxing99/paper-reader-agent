@@ -41,7 +41,7 @@ const state = {
     },
     layout: {
         guideWidth: normalizeSidebarWidth(localStorage.getItem("paperReaderAgent.guideWidth"), 300, 220, 520),
-        chatWidth: normalizeSidebarWidth(localStorage.getItem("paperReaderAgent.chatWidth"), 320, 260, 560),
+        chatWidth: normalizeSidebarWidth(localStorage.getItem("paperReaderAgent.chatWidth"), 320, 260, 760),
         dragging: null,
     },
     pdf: {
@@ -760,7 +760,7 @@ function applyWorkspaceLayout({ persist = false } = {}) {
     const resizerTotal = 24;
 
     let guideWidth = normalizeSidebarWidth(state.layout.guideWidth, 300, 220, 520);
-    let chatWidth = normalizeSidebarWidth(state.layout.chatWidth, 320, 260, 560);
+    let chatWidth = normalizeSidebarWidth(state.layout.chatWidth, 320, 260, 760);
 
     const maxGuideWidth = Math.max(220, totalWidth - chatWidth - centerMinWidth - resizerTotal);
     guideWidth = clampNumber(guideWidth, 220, maxGuideWidth);

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sys
@@ -131,6 +131,10 @@ class FormulaStageTests(unittest.TestCase):
     def test_normalize_stage_b_markdown_keeps_subscript_underscore(self) -> None:
         result = normalize_stage_b_markdown("The estimate is $P_a$.")
         self.assertEqual(result, "The estimate is $P_a$.")
+
+    def test_normalize_stage_b_markdown_fixes_common_ellipsis_typo(self) -> None:
+        result = normalize_stage_b_markdown(r"Sequence: $Y_1,\dot{s},Y_n$.")
+        self.assertEqual(result, r"Sequence: $Y_1,\ldots,Y_n$.")
 
     def test_normalize_stage_b_markdown_wraps_common_style_commands_in_braces(self) -> None:
         result = normalize_stage_b_markdown(r"Estimate: $\hat K + \mathbb P(A)$ and set $\mathcal Q$. ")
