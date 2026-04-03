@@ -62,11 +62,13 @@ Current baseline:
 - Normal prose selections still stay on the lighter text-only path.
 - Intermediate crop and draft artifacts are no longer part of the default user-facing UI.
 - The last local-OCR experiment was rejected because the latency and local model-loading cost were not acceptable for the product direction.
+- Complex display math in the right panel is improved but not fully converged yet; some long theorem/probability formulas still fall back to visibly raw `$$ ... $$` text instead of rendering cleanly.
 
 Near-term tasks:
 - Harden the Stage A -> Stage B output contract and fallback behavior.
 - Make the image-capable bridge route more robust before adding more UI.
 - Keep Stage B on a single model pass that returns Markdown with KaTeX-friendly delimiters.
+- Prefer Stage A as the source of truth for long display equations: next try should let Stage B reference recovered display formulas by placeholder rather than rewriting them from scratch.
 - Preserve the current selective routing: math-heavy selections may escalate, normal prose should not.
 - Decide later whether internal debug output needs a developer-only toggle rather than a default surface.
 
@@ -76,6 +78,8 @@ Design notes:
 - Normal prose selections should continue to use the lighter text-only path unless there is a clear reason to escalate.
 - Stage A and Stage B should remain separable for debugging and caching.
 - Stage B should return Markdown with KaTeX-friendly inline and display math delimiters.
+- For long display equations, Stage B should preferably reference the recovered Stage A equation rather than re-authoring the full block.
+- Symbol-level normalization should follow [docs/markdown-math-compat.md](./docs/markdown-math-compat.md).
 - Keep any local formatting repair deterministic and minimal; do not add a second model repair pass by default.
 - Keep the path MIT-compatible by default.
 
@@ -117,6 +121,7 @@ Roadmap implication:
 - Formula-heavy selection is now an active high-value track rather than a purely future idea.
 - The next iterations should keep Stage A as an internal handoff layer and keep Stage B as the user-visible result.
 - Stage B should remain a paper-aware interpretation layer rather than a generic post-processing step.
+- The current blocker is no longer basic crop correctness or Stage A recovery; it is reliable rendering of complex display equations inside the final Stage B answer.
 
 ## Open Questions
 

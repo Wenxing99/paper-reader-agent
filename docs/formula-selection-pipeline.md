@@ -57,6 +57,11 @@ Shipped today:
 
 This means the repository now has the first real end-to-end Stage A + Stage B slice, even though the output contract and fallback behavior still need refinement.
 
+Known blocker at the current stopping point:
+- long display equations are still the least reliable part of the final Stage B rendering path;
+- some complex theorem/probability formulas still show up as visibly raw `$$ ... $$` text in the right panel instead of rendering cleanly;
+- this is now considered a formatting-contract problem between Stage A, Stage B, and the Markdown/KaTeX layer, not a crop-capture problem.
+
 ## Proposed Architecture
 
 ### Stage A
@@ -98,9 +103,11 @@ Expected Stage B behavior:
 - return Markdown whose formulas are wrapped in KaTeX-friendly delimiters;
 - avoid leaving bare LaTeX commands floating in prose;
 - avoid pretending damaged symbols were recovered perfectly when they were not.
+- for long display equations, prefer to reuse the corresponding Stage A equation rather than rewriting the full displayed block inside Stage B.
 
 Stage B should be implemented as a paper-aware interpretation layer, not as generic post-processing.
 A tiny local normalization layer is acceptable for obvious delimiter cleanup, but the default path should not add a second model repair pass.
+The concrete symbol-level rules for this normalization layer live in [markdown-math-compat.md](./markdown-math-compat.md).
 
 ## Minimal Implementation Plan
 
@@ -159,6 +166,7 @@ Deliverables:
 - separate prompt / orchestration path for formula-heavy explanation;
 - final user-facing response comes from Stage B rather than the raw Stage A draft;
 - uncertainty from Stage A is used internally and mentioned only when it materially affects interpretation.
+- keep Stage A internal by default, but allow Stage B to reference numbered recovered display equations through explicit internal placeholder tokens, then expand those placeholders with exact Stage A display blocks after generation.
 
 ### Step 5: Routing and Fallbacks
 
@@ -183,6 +191,12 @@ Why this is the current direction:
 - the intended product experience is closer to "click and get a useful answer quickly" than "load and run a heavy local OCR stack".
 
 Local OCR remains a research branch, not the current default product path.
+
+Current practical direction for Stage B:
+- keep Stage B as the only default user-facing result;
+- keep long display equations anchored to Stage A recovery whenever possible;
+- do not add a second model repair round by default;
+- next candidate iteration is a placeholder/reference handoff where Stage B refers to recovered display equations instead of rewriting their LaTeX from scratch.
 
 ## Interface Design Notes
 

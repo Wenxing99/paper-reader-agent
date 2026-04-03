@@ -2211,6 +2211,8 @@ function renderMarkdownContent(source) {
         return "";
     }
 
+    const protectedDisplayMath = protectDisplayMathBlocks(text);
+    const protectedInlineMath = protectInlineMathSpans(protectedDisplayMath.text);
     const renderer = getMarkdownRenderer();
     if (!renderer) {
         return renderPlainTextHtml(text);
@@ -2218,7 +2220,9 @@ function renderMarkdownContent(source) {
 
     const container = document.createElement("div");
     try {
-        container.innerHTML = renderer.render(text);
+        container.innerHTML = renderer.render(protectedInlineMath.text);
+        restoreProtectedInlineMath(container, protectedInlineMath.blocks);
+        restoreProtectedDisplayMath(container, protectedDisplayMath.blocks);
         normalizeRichLinks(container);
         applyMathRendering(container);
         if (!container.innerHTML.trim()) {
@@ -2250,6 +2254,86 @@ function normalizeMarkdownSource(source) {
     return String(source ?? "")
         .replaceAll("\r\n", "\n")
         .trim();
+}
+
+function protectDisplayMathBlocks(text) {
+    const blocks = [];
+    const protectedText = String(text ?? "").replace(/(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\])/g, (match) => {
+        const token = `PRA_DISPLAY_MATH_BLOCK_${blocks.length}_TOKEN`;
+        blocks.push({ token, math: match });
+        return token;
+    });
+    return { text: protectedText, blocks };
+}
+
+function restoreProtectedDisplayMath(container, blocks) {
+    if (!container || !blocks?.length) {
+        return;
+    }
+
+    let html = container.innerHTML;
+    for (const block of blocks) {
+        html = html.replaceAll(block.token, block.math);
+    }
+    container.innerHTML = html;
+}
+
+function protectInlineMathSpans(text) {
+    const blocks = [];
+    let protectedText = String(text ?? "");
+
+    protectedText = protectedText.replace(/\\\((.+?)\\\)/g, (match, content) => {
+        return maybeProtectInlineMath(match, content, blocks);
+    });
+
+    protectedText = protectedText.replace(/\$([^\$\n]+)\$/g, (match, content) => {
+        return maybeProtectInlineMath(match, content, blocks);
+    });
+
+    return { text: protectedText, blocks };
+}
+
+function maybeProtectInlineMath(match, content, blocks) {
+    if (!looksLikeMathInlineSpan(content)) {
+        return match;
+    }
+
+    const token = `PRA_INLINE_MATH_BLOCK_${blocks.length}_TOKEN`;
+    blocks.push({ token, math: match });
+    return token;
+}
+
+function looksLikeMathInlineSpan(content) {
+    const value = String(content ?? "").trim();
+    if (!value || value.length > 320) {
+        return false;
+    }
+
+    if (/[\\_^{}]/.test(value)) {
+        return true;
+    }
+
+    if (/[=<>|]/.test(value) && /[A-Za-z]/.test(value)) {
+        return true;
+    }
+
+    if (/\\(?:frac|hat|mathbb|mathcal|mathrm|left|right|le|ge|lambda|nu|pi|epsilon|kappa|sigma|argmin|argmax|infty)/i.test(value)) {
+        return true;
+    }
+
+    return false;
+}
+
+function restoreProtectedInlineMath(container, blocks) {
+    if (!container || !blocks?.length) {
+        return;
+    }
+
+    let html = container.innerHTML;
+    for (const block of blocks) {
+        html = html.replaceAll(block.token, block.math);
+    }
+    container.innerHTML = html;
 }
 
 function renderPlainTextHtml(text) {

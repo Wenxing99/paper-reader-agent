@@ -300,6 +300,28 @@ Avoid:
 - UI rendering;
 - export/integration layers.
 
+## Self-Improving Memory
+
+This repository may use the shared Codex self-improving memory at `C:\Users\1\.codex\self-improving\`.
+
+Use it conservatively:
+- before non-trivial work, read `memory.md` first and then only the smallest relevant files from `domains/` or `projects/`;
+- treat the memory system as layered:
+  - shared `memory.md` should hold cross-project lessons and durable working preferences;
+  - `domains/` should hold lessons that generalize across a class of projects or technical surfaces;
+  - `projects/` should hold repository-specific architecture decisions, repeated pitfalls, and local workflow lessons;
+- do not write repository-specific implementation details into the shared top-level memory unless they have clearly generalized beyond this repo;
+- log explicit reusable corrections, stable preferences, and repeated successful lessons to the appropriate self-improving files;
+- promote a lesson upward only when it has repeated evidence across multiple tasks or projects;
+- treat one-off instructions as task-local unless the user explicitly asks to remember them;
+- never infer rules from silence, and never store secrets, credentials, health data, or third-party personal information;
+- if a remembered rule changes behavior in this repo, be ready to cite the source plainly.
+
+Practical repo guidance:
+- before major work in this repo, read shared `memory.md` plus only the smallest relevant project-specific memory file if one exists for `paper-reader-agent`;
+- when adding a new lesson, decide first whether it is cross-project, domain-level, or repo-specific;
+- if uncertain, prefer storing the lesson at the narrower level rather than the broader one.
+
 ## License Guardrails
 
 This repository should remain publishable under the MIT license unless the user explicitly approves a different direction.
@@ -321,6 +343,23 @@ Agents working in this repo should follow this order:
 4. Prefer small, testable increments.
 5. Keep architecture documents, `ROADMAP.md`, and this file aligned with real product changes.
 6. When editing user-facing Chinese text, preserve UTF-8, avoid shell-based rewrites that may corrupt encoding, and re-scan for mojibake/placeholder strings before finishing.
+
+### Multi-Agent Rules
+
+Default stance:
+- for non-trivial tasks, start by decomposing the work in a multi-agent-friendly way, even if the final execution stays serial;
+- treat parallel agent execution as opt-in after write scopes and coupling are understood, not as an automatic default.
+
+When multiple agents are used for one task:
+- use one main/orchestrating agent to define the goal, split the work, integrate results, and decide whether to keep or revert changes;
+- prefer explorer-style read-only agents for codebase inspection, rule lookup, compatibility checks, and problem isolation;
+- prefer worker agents only when the write scope is clear and does not overlap with another worker;
+- define the write scope before spawning workers, and keep worker write sets disjoint whenever possible;
+- avoid parallel writers on high-regression files such as `src/paper_reader_agent/static/app.js` and `src/paper_reader_agent/services/formula_stage.py`;
+- if a change touches prompt behavior, rendering behavior, and application state at the same time, keep the work serial unless the write boundaries are exceptionally clean;
+- after parallel work, the main agent must re-check tests, user-visible behavior, and document alignment before considering the iteration complete.
+
+Recommended workflow details live in [docs/multi-agent-workflow.md](./docs/multi-agent-workflow.md).
 
 ## Definition Of Success For Near-Term Iterations
 

@@ -39,6 +39,7 @@ Current priorities and staged implementation notes live in [ROADMAP.md](./ROADMA
 - Stage B is expected to return Markdown with KaTeX-friendly math delimiters so the right panel can render formulas directly.
 - The current shipped normalization pass is intentionally small and local: it only cleans obvious math delimiters such as \\(...\\), \\[...\\], or fenced latex blocks instead of doing a second model repair round.
 - Intermediate crop/draft artifacts are now treated as internal implementation details rather than default user-facing UI.
+- Current known limitation: long display equations in some complex theorem/probability selections still do not render reliably in the right panel, so this pilot should be treated as in-progress rather than fully converged.
 
 ## Reading Flow
 

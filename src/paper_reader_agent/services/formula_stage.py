@@ -127,6 +127,7 @@ def request_formula_stage_b(
         temperature=0.2,
     )
     normalized = normalize_stage_b_markdown(answer)
+    normalized = _inject_display_equation_placeholders(normalized, stage_a_result)
     return _prefer_stage_a_display_equations(normalized, stage_a_result)
 
 
@@ -181,6 +182,7 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
         if str(item or "").strip()
     ]
     warning_block = "\n".join(f"- {item}" for item in warnings) if warnings else "- none"
+    display_equations = _select_reusable_display_equations(_extract_stage_a_display_equations(latex))
 
     if mode == "translate":
         task_lines = [
@@ -189,11 +191,15 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
             "Preserve formulas, theorem labels, variable names, and mathematical notation.",
             "Format every inline formula as `$...$`.",
             "Format every standalone formula as `$$...$$`.",
+            "Keep `_` for subscripts; use `\\_` only for a literal underscore character.",
+            "When a star is used as a wildcard or index symbol inside math, prefer `\\ast` over raw `*`.",
+            "When using commands like `\\hat`, `\\tilde`, `\\bar`, `\\mathbb`, or `\\mathcal`, wrap the target symbol in braces, for example `\\hat{K}` or `\\mathbb{P}`.",
             "When you show a displayed equation, copy it directly from `Recovered LaTeX transcription` instead of rewriting its LaTeX.",
             "Do not alter backslashes, braces, subscripts, superscripts, or delimiter commands inside copied equations unless absolutely necessary.",
             "Do not leave bare LaTeX commands in prose.",
             "Never use plain parentheses like `(L)` or square brackets like `[ ... ]` as math delimiters; use `$...$` or `$$...$$` instead.",
             "Long formulas should be placed on their own lines instead of being embedded in a paragraph.",
+            "Do not write long display equations from scratch. If you need to reference a recovered displayed equation, use its placeholder token exactly, such as `{{DISPLAY_EQ_1}}`, on its own line.",
             "Do not mention the crop image, recognition process, internal stages, or system drafts.",
             "Only mention uncertainty if `Recognition warnings` materially changes the meaning.",
             "After the translation, add one short sentence describing the role of this passage in the paper.",
@@ -205,18 +211,22 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
             "Use `Recovered LaTeX transcription` as the primary representation; use `Noisy selected text` only as a secondary hint.",
             "Format every inline formula as `$...$`.",
             "Format every standalone formula as `$$...$$`.",
+            "Keep `_` for subscripts; use `\\_` only for a literal underscore character.",
+            "When a star is used as a wildcard or index symbol inside math, prefer `\\ast` over raw `*`.",
+            "When using commands like `\\hat`, `\\tilde`, `\\bar`, `\\mathbb`, or `\\mathcal`, wrap the target symbol in braces, for example `\\hat{K}` or `\\mathbb{P}`.",
             "When you show a displayed equation, copy it directly from `Recovered LaTeX transcription` instead of rewriting its LaTeX.",
             "Do not alter backslashes, braces, subscripts, superscripts, or delimiter commands inside copied equations unless absolutely necessary.",
             "Do not leave bare LaTeX commands in prose.",
             "Never use plain parentheses like `(L)` or square brackets like `[ ... ]` as math delimiters; use `$...$` or `$$...$$` instead.",
             "Long formulas should be placed on their own lines instead of being embedded in a paragraph.",
+            "Do not write long display equations from scratch. If you need to reference a recovered displayed equation, use its placeholder token exactly, such as `{{DISPLAY_EQ_1}}`, on its own line.",
             "Do not mention the crop image, recognition process, internal stages, or system drafts.",
             "Only mention uncertainty if `Recognition warnings` materially changes the interpretation.",
             "Use these exact Chinese section headings:",
-            "1. 一句话总结",
-            "2. 这个公式 / 定理在说什么",
-            "3. 必要符号或量的说明",
-            "4. 这段内容在整篇论文里的作用",
+            "1. \u4e00\u53e5\u8bdd\u603b\u7ed3",
+            "2. \u8fd9\u4e2a\u516c\u5f0f / \u5b9a\u7406\u5728\u8bf4\u4ec0\u4e48",
+            "3. \u5fc5\u8981\u7b26\u53f7\u6216\u91cf\u7684\u8bf4\u660e",
+            "4. \u8fd9\u6bb5\u5185\u5bb9\u5728\u6574\u7bc7\u8bba\u6587\u91cc\u7684\u4f5c\u7528",
             "Do not invent assumptions that are not supported by the paper context.",
             "Return Markdown only.",
         ]
@@ -231,6 +241,11 @@ def build_formula_stage_b_prompt(*, selected_text: str, mode: str, stage_a_resul
         "Recognition warnings:",
         warning_block,
     ]
+
+    if display_equations:
+        sections.extend(["Recovered display equations:"])
+        for index, equation in enumerate(display_equations, start=1):
+            sections.extend([f"{{{{DISPLAY_EQ_{index}}}}}", "```latex", equation, "```"] )
 
     if transcript:
         sections.extend(
@@ -257,6 +272,7 @@ def normalize_stage_b_markdown(text: str) -> str:
     value = FENCED_LATEX_BLOCK_RE.sub(lambda match: _display_math_block(match.group(1)), value)
     value = DISPLAY_LATEX_RE.sub(lambda match: _display_math_block(match.group(1)), value)
     value = INLINE_LATEX_RE.sub(lambda match: _inline_math(match.group(1)), value)
+    value = _normalize_standalone_math_lines(value)
     value = _normalize_pseudo_math_outside_existing_delimiters(value)
     value = _normalize_markdown_sensitive_math_tokens(value)
     return value
@@ -446,6 +462,12 @@ def _normalize_math_token_content(text: str) -> str:
     value = re.sub(r'(?<=,)\*', lambda _: r'\ast', value)
     value = re.sub(r'(?<=\{)\*(?=\})', lambda _: r'\ast', value)
     value = re.sub(r'(?<=_)\*(?=[^A-Za-z]|$)', lambda _: r'\ast', value)
+
+    # Prefer braced forms for a small set of common style commands.
+    value = re.sub(r'\\(hat|tilde|bar|check|breve|vec|dot|ddot|widehat|widetilde)\s+(?!\{)([A-Za-z])', r'\\\1{\2}', value)
+    value = re.sub(r'\\(mathbb|mathcal|mathbf|mathrm|mathsf|mathtt|mathfrak)\s+(?!\{)([A-Za-z])', r'\\\1{\2}', value)
+    value = re.sub(r'\\(hat|tilde|bar|check|breve|vec|dot|ddot|widehat|widetilde)(?!\{)([A-Za-z])\b', r'\\\1{\2}', value)
+    value = re.sub(r'\\(mathbb|mathcal|mathbf|mathrm|mathsf|mathtt|mathfrak)(?!\{)([A-Za-z])\b', r'\\\1{\2}', value)
     return value
 
 
@@ -467,6 +489,30 @@ def _normalize_pseudo_math_outside_existing_delimiters(text: str) -> str:
         tail = _normalize_pseudo_inline_outside_existing_delimiters(tail)
         parts.append(tail)
     return "".join(parts)
+
+
+def _normalize_standalone_math_lines(text: str) -> str:
+    lines = text.split("\n")
+    normalized_lines: list[str] = []
+    inside_display = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "$$":
+            normalized_lines.append(line)
+            inside_display = not inside_display
+            continue
+
+        if inside_display:
+            normalized_lines.append(line)
+            continue
+
+        if _looks_like_standalone_math_line(line):
+            normalized_lines.append(_display_math_block(line))
+        else:
+            normalized_lines.append(line)
+
+    return "\n".join(normalized_lines)
 
 
 def _normalize_pseudo_inline_outside_existing_delimiters(text: str) -> str:
@@ -527,6 +573,28 @@ def _looks_like_inline_math_fragment(text: str) -> bool:
     return False
 
 
+def _looks_like_standalone_math_line(text: str) -> bool:
+    value = text.strip()
+    if not value:
+        return False
+    if value.startswith(("$$", "- ", "* ", "1. ", "2. ", "3. ", "4. ")):
+        return False
+    if "$" in value:
+        return False
+    if len(value) < 12:
+        return False
+    if not value.startswith("\\"):
+        return False
+
+    if re.search(r"\\tag\{", value):
+        return True
+    if re.search(r"\\(?:argmin|argmax|min|max)\b", value) and "=" in value:
+        return True
+    if re.search(r"(?:=|\\(?:le|ge)|\\to|\\infty)", value):
+        return True
+    return False
+
+
 def _normalize_confidence(text: str) -> str:
     value = str(text or "").strip().lower()
     if value.startswith("high"):
@@ -539,17 +607,32 @@ def _normalize_confidence(text: str) -> str:
 
 
 
+def _inject_display_equation_placeholders(text: str, stage_a_result: dict[str, Any]) -> str:
+    value = str(text or "")
+    display_equations = _select_reusable_display_equations(
+        _extract_stage_a_display_equations(str((stage_a_result or {}).get("latex") or ""))
+    )
+    if not display_equations:
+        return value
+
+    for index, equation in enumerate(display_equations, start=1):
+        value = value.replace(f"{{{{DISPLAY_EQ_{index}}}}}", _display_math_block(equation))
+    return value
+
+
 def _prefer_stage_a_display_equations(text: str, stage_a_result: dict[str, Any]) -> str:
     stage_a_latex = str((stage_a_result or {}).get("latex") or "").strip()
     if not stage_a_latex:
         return text
 
-    preferred_blocks = _extract_stage_a_display_equations(stage_a_latex)
+    preferred_blocks = _select_reusable_display_equations(_extract_stage_a_display_equations(stage_a_latex))
     if not preferred_blocks:
         return text
 
     matches = list(DISPLAY_DOLLAR_RE.finditer(text))
     if not matches:
+        return text
+    if len(matches) != len(preferred_blocks):
         return text
 
     parts: list[str] = []
@@ -579,6 +662,38 @@ def _extract_stage_a_display_equations(text: str) -> list[str]:
             blocks.append(content)
 
     return blocks
+
+
+def _select_reusable_display_equations(blocks: list[str]) -> list[str]:
+    selected: list[str] = []
+    for block in blocks:
+        if _looks_like_complex_display_equation(block):
+            selected.append(block)
+    return selected
+
+
+def _looks_like_complex_display_equation(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+
+    command_count = len(re.findall(r"\\[A-Za-z]+", value))
+    if re.search(r"\\tag\{", value):
+        return True
+    if re.search(r"\\(?:argmin|argmax)\b", value):
+        return True
+    if len(value) >= 90:
+        return True
+    if command_count >= 8:
+        return True
+    if re.search(r"\\mathbb\{(?:P|E)\}", value) and re.search(r"[=<>]|\\(?:le|ge|forall|exists)", value):
+        return True
+    if re.search(r"\\mathbb\{(?:R|S)\}", value) and re.search(r"\\(?:le|ge|frac|forall|exists)", value):
+        return True
+    if re.search(r"\\(?:frac|forall|exists|sum|prod|int)", value) and re.search(r"[=<>]|\\(?:le|ge)", value):
+        return True
+    return False
+
 
 def _parse_warning_lines(text: str) -> list[str]:
     value = str(text or "").strip()
